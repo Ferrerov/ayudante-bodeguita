@@ -1,0 +1,79 @@
+// Ayudante Bodeguita - Prisma Schema
+// Modelo de datos del MVP
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Product {
+  id                 Int      @id @default(autoincrement())
+  sku                String   @unique
+  type               String   // Producto, Combo, Servicio
+  parentSku          String?  @map("parent_sku")
+  name               String
+  attribute1         String?
+  attribute1Variant  String?  @map("attribute1_variant")
+  attribute2         String?
+  attribute2Variant  String?  @map("attribute2_variant")
+  barcode            String?
+  oemCode            String?  @map("oem_code")
+  description        String?
+  status             String   // Activo, Inactivo
+  currency           String?
+  internalCost       Decimal  @default(0) @map("internal_cost") @db.Decimal(12, 2)
+  basePrice          Decimal  @default(0) @map("base_price") @db.Decimal(12, 2)
+  vat                Decimal  @default(0) @db.Decimal(5, 2)
+  finalPrice         Decimal  @default(0) @map("final_price") @db.Decimal(12, 2)
+  profitability      Decimal  @default(0) @db.Decimal(8, 2)
+  stock              Decimal  @default(0) @db.Decimal(12, 2)
+  reservedStock      Decimal  @default(0) @map("reserved_stock") @db.Decimal(12, 2)
+  availableStock     Decimal  @default(0) @map("available_stock") @db.Decimal(12, 2)
+  minimumStock       Decimal  @default(0) @map("minimum_stock") @db.Decimal(12, 2)
+  visibleInSales     Boolean  @default(true) @map("visible_in_sales")
+  category           String?
+  subcategory        String?
+  supplier           String?
+  notes              String?
+  purchaseAccount    String?  @map("purchase_account")
+  salesAccount       String?  @map("sales_account")
+  inventoryAccount   String?  @map("inventory_account")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  @@map("products")
+}
+
+model PriceList {
+  id        Int             @id @default(autoincrement())
+  code      String          @unique
+  name      String
+  items     PriceListItem[]
+  createdAt DateTime        @default(now()) @map("created_at")
+  updatedAt DateTime        @updatedAt @map("updated_at")
+
+  @@map("price_lists")
+}
+
+model PriceListItem {
+  id          Int       @id @default(autoincrement())
+  priceListId Int       @map("price_list_id")
+  priceList   PriceList @relation(fields: [priceListId], references: [id], onDelete: Cascade)
+  sku         String
+  name        String
+  category    String?
+  subcategory String?
+  description String?
+  basePrice   Decimal   @default(0) @map("base_price") @db.Decimal(12, 2)
+  vat         Decimal   @default(0) @db.Decimal(5, 2)
+  finalPrice  Decimal   @default(0) @map("final_price") @db.Decimal(12, 2)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@unique([priceListId, sku])
+  @@index([sku])
+  @@map("price_list_items")
+}

@@ -1,0 +1,116 @@
+import {
+  Controller,
+  Post,
+  Body,
+  UploadedFile,
+  UseInterceptors,
+  BadRequestException,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ImportsService } from './imports.service';
+
+@Controller('imports')
+export class ImportsController {
+  constructor(private readonly importsService: ImportsService) {}
+
+  @Post('purchase-review/text')
+  async parsePurchaseFromText(
+    @Body('text') text: string,
+  ): Promise<any> {
+    if (!text || !String(text).trim()) {
+      throw new BadRequestException('No se recibiÃ³ texto para procesar.');
+    }
+
+    return this.importsService.parsePurchaseReviewFromText(text);
+  }
+
+  @Post('purchase-review/file')
+  @UseInterceptors(FileInterceptor('file'))
+  async parsePurchaseFromFile(@UploadedFile() file: Express.Multer.File): Promise<any> {
+    if (!file) {
+      throw new BadRequestException('No se recibiÃ³ ningÃºn archivo.');
+    }
+
+    const lowerName = file.originalname.toLowerCase();
+    const isExcel = lowerName.endsWith('.xlsx') || lowerName.endsWith('.xls');
+    const isCsv = lowerName.endsWith('.csv');
+
+    if (!isExcel && !isCsv) {
+      throw new BadRequestException(
+        'El archivo debe ser .xlsx, .xls o .csv.',
+      );
+    }
+
+    return this.importsService.parsePurchaseReviewFromFile(
+      file.buffer,
+      file.originalname,
+    );
+  }
+
+  @Post('products')
+  @UseInterceptors(FileInterceptor('file'))
+  async importProducts(@UploadedFile() file: Express.Multer.File): Promise<any> {
+    if (!file) {
+      throw new BadRequestException('No se recibió ningún archivo.');
+    }
+
+    if (
+      !file.originalname.endsWith('.xlsx') &&
+      !file.originalname.endsWith('.xls')
+    ) {
+      throw new BadRequestException(
+        'El archivo debe ser un archivo Excel (.xlsx).',
+      );
+    }
+
+    return this.importsService.importProducts(file.buffer, file.originalname);
+  }
+
+  @Post('price-lists/bodeguita')
+  @UseInterceptors(FileInterceptor('file'))
+  async importBodeguita(@UploadedFile() file: Express.Multer.File): Promise<any> {
+    if (!file) {
+      throw new BadRequestException('No se recibió ningún archivo.');
+    }
+
+    if (
+      !file.originalname.endsWith('.xlsx') &&
+      !file.originalname.endsWith('.xls')
+    ) {
+      throw new BadRequestException(
+        'El archivo debe ser un archivo Excel (.xlsx).',
+      );
+    }
+
+    return this.importsService.importPriceList(
+      file.buffer,
+      file.originalname,
+      'BODEGUITA',
+    );
+  }
+
+  @Post('price-lists/distribuidora-mayorista')
+  @UseInterceptors(FileInterceptor('file'))
+  async importDistribuidoraMayorista(
+    @UploadedFile() file: Express.Multer.File,
+  ): Promise<any> {
+    if (!file) {
+      throw new BadRequestException('No se recibió ningún archivo.');
+    }
+
+    if (
+      !file.originalname.endsWith('.xlsx') &&
+      !file.originalname.endsWith('.xls')
+    ) {
+      throw new BadRequestException(
+        'El archivo debe ser un archivo Excel (.xlsx).',
+      );
+    }
+
+    return this.importsService.importPriceList(
+      file.buffer,
+      file.originalname,
+      'DISTRIBUIDORA_MAYORISTA',
+    );
+  }
+}
