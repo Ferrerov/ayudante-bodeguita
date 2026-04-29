@@ -205,12 +205,15 @@ export class ImportsService {
     }
 
     // 5. Transacción: borrar y reinsertar
-    await this.prisma.$transaction(async (tx) => {
-      await tx.product.deleteMany();
-      for (const product of validProducts) {
-        await tx.product.create({ data: product as any });
-      }
-    });
+    await this.prisma.$transaction(
+      async (tx) => {
+        await tx.product.deleteMany();
+        if (validProducts.length > 0) {
+          await tx.product.createMany({ data: validProducts as any });
+        }
+      },
+      { timeout: 60000 },
+    );
 
     result.rowsImported = validProducts.length;
     return result;
@@ -351,14 +354,17 @@ export class ImportsService {
     }
 
     // 8. Transacción: borrar items de esta lista y reinsertar
-    await this.prisma.$transaction(async (tx) => {
-      await tx.priceListItem.deleteMany({
-        where: { priceListId: priceList.id },
-      });
-      for (const item of validItems) {
-        await tx.priceListItem.create({ data: item as any });
-      }
-    });
+    await this.prisma.$transaction(
+      async (tx) => {
+        await tx.priceListItem.deleteMany({
+          where: { priceListId: priceList.id },
+        });
+        if (validItems.length > 0) {
+          await tx.priceListItem.createMany({ data: validItems as any });
+        }
+      },
+      { timeout: 60000 },
+    );
 
     result.rowsImported = validItems.length;
     return result;
