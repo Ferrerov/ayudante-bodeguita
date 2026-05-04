@@ -44,6 +44,7 @@ const PRODUCT_REQUIRED_COLUMNS = [
 ];
 
 const PRICE_LIST_REQUIRED_COLUMNS = ['Codigo', 'Nombre', 'Precio Final'];
+const REPLENISHMENT_REQUIRED_COLUMNS = ['Codigo', 'Nombre', 'Cantidad'];
 
 const ALLOWED_TYPES = ['Producto', 'Combo', 'Servicio'];
 
@@ -367,6 +368,140 @@ export class ImportsService {
     );
 
     result.rowsImported = validItems.length;
+    return result;
+  }
+
+  // ========== IMPORT REPOSICION ==========
+
+  async importReplenishment(
+    buffer: Buffer,
+    filename: string,
+  ): Promise<ImportResult> {
+    const result: ImportResult = {
+      type: 'reposicion',
+      filename,
+      rowsRead: 0,
+      rowsImported: 0,
+      warnings: [],
+      errors: [],
+    };
+
+    const productCount = await this.prisma.product.count();
+    if (productCount === 0) {
+      throw new BadRequestException(
+        'No se puede importar reposicion sin un catalogo de productos cargado.',
+      );
+    }
+
+    let parsed;
+    try {
+      parsed = parseXlsx(buffer);
+    } catch (err) {
+      throw new BadRequestException(
+        `Error al leer el archivo: ${(err as Error).message}`,
+      );
+    }
+
+    const missing = findMissingColumns(
+      parsed.headers,
+      REPLENISHMENT_REQUIRED_COLUMNS,
+    );
+    if (missing.length > 0) {
+      throw new BadRequestException(
+        `Columnas obligatorias faltantes: ${missing.join(', ')}`,
+      );
+    }
+
+    result.rowsRead = parsed.rows.length;
+
+    const grouped = new Map<string, { sku: string; name: string; quantity: number }>();
+
+    for (let i = 0; i < parsed.rows.length; i += 1) {
+      const row = parsed.rows[i];
+      const rowNum = i + 2;
+      const sku = normalizeString(row['Codigo']);
+      const name = normalizeString(row['Nombre']);
+      const quantity = parseDecimal(row['Cantidad']);
+
+      if (!sku) {
+        result.errors.push(`Fila ${rowNum}: Codigo vacio.`);
+        continue;
+      }
+      if (!name) {
+        result.errors.push(`Fila ${rowNum}: Nombre vacio.`);
+        continue;
+      }
+      if (quantity === null) {
+        result.errors.push(
+          `Fila ${rowNum}: Cantidad invalida (Codigo: ${sku}).`,
+        );
+        continue;
+      }
+
+      const replenishmentQuantity = Math.abs(quantity);
+      if (replenishmentQuantity === 0) {
+        result.warnings.push(
+          `Fila ${rowNum}: Cantidad cero omitida (Codigo: ${sku}).`,
+        );
+        continue;
+      }
+
+      const current = grouped.get(sku);
+      if (current) {
+        current.quantity += replenishmentQuantity;
+      } else {
+        grouped.set(sku, { sku, name, quantity: replenishmentQuantity });
+      }
+    }
+
+    if (result.errors.length > 0) {
+      return result;
+    }
+
+    const products = await this.prisma.product.findMany({
+      where: { sku: { in: Array.from(grouped.keys()) } },
+      select: { sku: true, name: true },
+    });
+    const productMap = new Map(products.map((product) => [product.sku, product]));
+    const items = Array.from(grouped.values()).filter((item) => {
+      const product = productMap.get(item.sku);
+      if (!product) {
+        result.warnings.push(
+          `Codigo "${item.sku}" no existe en el catalogo de productos y fue omitido.`,
+        );
+        return false;
+      }
+      if (product.name !== item.name) {
+        result.warnings.push(
+          `Codigo "${item.sku}": nombre difiere. Catalogo: "${product.name}", Archivo: "${item.name}".`,
+        );
+      }
+      item.name = product.name;
+      return true;
+    });
+
+    await this.prisma.$transaction(
+      items.map((item) =>
+        this.prisma.replenishmentItem.upsert({
+          where: { sku: item.sku },
+          create: {
+            sku: item.sku,
+            name: item.name,
+            quantity: item.quantity,
+            status: 'PENDING',
+            replenishedAt: null,
+          },
+          update: {
+            name: item.name,
+            quantity: { increment: item.quantity },
+            status: 'PENDING',
+            replenishedAt: null,
+          },
+        }),
+      ),
+    );
+
+    result.rowsImported = items.length;
     return result;
   }
 

@@ -45,6 +45,29 @@ export interface FilterOptions {
   statuses: string[];
 }
 
+export interface ReplenishmentItem {
+  id: number;
+  sku: string;
+  name: string;
+  quantity: number;
+  category: string | null;
+  subcategory: string | null;
+  updatedAt: string;
+}
+
+export interface ReplenishmentResponse {
+  data: ReplenishmentItem[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+export interface ReplenishmentFilters {
+  categories: string[];
+  subcategories: string[];
+}
+
 export interface PurchaseReviewRow {
   sku: string;
   name: string;
@@ -136,6 +159,23 @@ export async function importPriceList(
   return res.json();
 }
 
+export async function importReplenishment(file: File): Promise<ImportResult> {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const res = await fetch(`${API_URL}/imports/replenishment`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!res.ok) {
+    const error = await res.json();
+    throw new Error(error.message || 'Error al importar reposicion');
+  }
+
+  return res.json();
+}
+
 export async function fetchUnified(params: {
   search?: string;
   category?: string;
@@ -172,6 +212,52 @@ export async function fetchFilters(): Promise<FilterOptions> {
   }
 
   return res.json();
+}
+
+export async function fetchReplenishment(params: {
+  search?: string;
+  category?: string;
+  subcategory?: string;
+  sortBy?: string;
+  sortOrder?: string;
+  page?: number;
+  limit?: number;
+}): Promise<ReplenishmentResponse> {
+  const searchParams = new URLSearchParams();
+
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== '') {
+      searchParams.set(key, String(value));
+    }
+  });
+
+  const res = await fetch(`${API_URL}/replenishment?${searchParams.toString()}`);
+
+  if (!res.ok) {
+    throw new Error('Error al cargar reposicion');
+  }
+
+  return res.json();
+}
+
+export async function fetchReplenishmentFilters(): Promise<ReplenishmentFilters> {
+  const res = await fetch(`${API_URL}/replenishment/filters`);
+
+  if (!res.ok) {
+    throw new Error('Error al cargar filtros de reposicion');
+  }
+
+  return res.json();
+}
+
+export async function markReplenished(id: number): Promise<void> {
+  const res = await fetch(`${API_URL}/replenishment/${id}/replenished`, {
+    method: 'PATCH',
+  });
+
+  if (!res.ok) {
+    throw new Error('Error al marcar como repuesto');
+  }
 }
 
 export async function parsePurchaseReviewText(text: string): Promise<PurchaseReviewResult> {

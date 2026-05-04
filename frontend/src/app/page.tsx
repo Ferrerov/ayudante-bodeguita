@@ -5,10 +5,11 @@ import ImportCard from '@/components/ImportCard';
 import ProductsTable from '@/components/ProductsTable';
 import CostsPricesTable from '@/components/CostsPricesTable';
 import ProductSkuCodesSection from '@/components/ProductSkuCodesSection';
-import { importProducts, importPriceList } from '@/lib/api';
+import ReplenishmentTable from '@/components/ReplenishmentTable';
+import { importProducts, importPriceList, importReplenishment } from '@/lib/api';
 
 export default function Home() {
-  const [activeSection, setActiveSection] = useState<'imports' | 'catalog' | 'costs-prices' | 'product-codes'>('imports');
+  const [activeSection, setActiveSection] = useState<'imports' | 'catalog' | 'costs-prices' | 'product-codes' | 'replenishment'>('imports');
 
   return (
     <>
@@ -52,6 +53,13 @@ export default function Home() {
             >
               Codigos de productos
             </button>
+            <button
+              type="button"
+              className={`section-tab ${activeSection === 'replenishment' ? 'active' : ''}`}
+              onClick={() => setActiveSection('replenishment')}
+            >
+              Reposicion
+            </button>
           </nav>
 
           {activeSection === 'imports' && (
@@ -76,6 +84,12 @@ export default function Home() {
                   description="Importar lista de precios Distribuidora Mayorista. Requiere catalogo de productos cargado."
                   onImport={(file) => importPriceList(file, 'distribuidora-mayorista')}
                 />
+
+                <ImportCard
+                  title="Reposicion"
+                  description="Importar historial de ventas. Acumula cantidades vendidas como pendientes para reponer."
+                  onImport={(file) => importReplenishment(file)}
+                />
               </div>
             </div>
           )}
@@ -83,6 +97,7 @@ export default function Home() {
           {activeSection === 'catalog' && <ProductsTable />}
           {activeSection === 'costs-prices' && <CostsPricesTable />}
           {activeSection === 'product-codes' && <ProductSkuCodesSection />}
+          {activeSection === 'replenishment' && <ReplenishmentTable />}
         </div>
       </main>
     </>
