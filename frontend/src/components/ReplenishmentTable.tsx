@@ -9,6 +9,15 @@ import {
   ReplenishmentItem,
 } from '@/lib/api';
 
+type ReplenishmentColumnKey = 'sku' | 'name' | 'category' | 'subcategory' | 'quantity' | 'action';
+type HideableReplenishmentColumnKey = Exclude<ReplenishmentColumnKey, 'action'>;
+
+type ReplenishmentColumn = {
+  key: ReplenishmentColumnKey;
+  label: string;
+  sortable: boolean;
+};
+
 function formatNumber(value: number): string {
   return value.toLocaleString('es-AR', { maximumFractionDigits: 2 });
 }
@@ -29,6 +38,13 @@ export default function ReplenishmentTable() {
   const [sortBy, setSortBy] = useState('name');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
   const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [visibleColumnKeys, setVisibleColumnKeys] = useState<HideableReplenishmentColumnKey[]>([
+    'sku',
+    'name',
+    'category',
+    'subcategory',
+    'quantity',
+  ]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -76,7 +92,7 @@ export default function ReplenishmentTable() {
     loadData();
   }, [loadData]);
 
-  const handleSort = (field: string) => {
+  const handleSort = (field: ReplenishmentColumnKey) => {
     if (sortBy === field) {
       setSortOrder((current) => (current === 'asc' ? 'desc' : 'asc'));
     } else {
@@ -109,14 +125,70 @@ export default function ReplenishmentTable() {
     return <span className="sort-icon">{sortOrder === 'asc' ? '↑' : '↓'}</span>;
   };
 
-  const columns = [
+  const columns: ReplenishmentColumn[] = [
     { key: 'sku', label: 'Codigo', sortable: true },
     { key: 'name', label: 'Nombre', sortable: true },
     { key: 'category', label: 'Rubro', sortable: true },
     { key: 'subcategory', label: 'Sub Rubro', sortable: true },
     { key: 'quantity', label: 'Cantidad Total a Reponer', sortable: true },
-    { key: 'action', label: 'Accion', sortable: false },
+    { key: 'action', label: '✓', sortable: false },
   ];
+
+  const hideableColumns = columns.filter(
+    (column): column is ReplenishmentColumn & { key: HideableReplenishmentColumnKey } =>
+      column.key !== 'action',
+  );
+  const actionColumn = columns.find((column) => column.key === 'action')!;
+  const visibleColumns = [
+    ...hideableColumns.filter((column) => visibleColumnKeys.includes(column.key)),
+    actionColumn,
+  ];
+
+  const toggleColumn = (key: HideableReplenishmentColumnKey) => {
+    setVisibleColumnKeys((current) => {
+      if (current.includes(key)) {
+        return current.length === 1 ? current : current.filter((value) => value !== key);
+      }
+
+      return hideableColumns
+        .map((column) => column.key)
+        .filter((value) => value === key || current.includes(value));
+    });
+  };
+
+  const renderCell = (item: ReplenishmentItem, columnKey: ReplenishmentColumnKey) => {
+    switch (columnKey) {
+      case 'sku':
+        return <td key={columnKey} className="cell-sku">{item.sku}</td>;
+      case 'name':
+        return (
+          <td key={columnKey} style={{ maxWidth: '420px', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {item.name}
+          </td>
+        );
+      case 'category':
+        return <td key={columnKey}>{item.category || '-'}</td>;
+      case 'subcategory':
+        return <td key={columnKey}>{item.subcategory || '-'}</td>;
+      case 'quantity':
+        return <td key={columnKey} className="cell-stock">{formatNumber(item.quantity)}</td>;
+      case 'action':
+        return (
+          <td key={columnKey} className="cell-action-sticky">
+            <button
+              type="button"
+              className="btn btn-success btn-compact btn-icon-compact"
+              disabled={markingId === item.id}
+              onClick={() => handleReplenished(item.id)}
+              aria-label={`Marcar ${item.sku} como repuesto`}
+              title="Marcar como repuesto"
+            >
+              ✓
+            </button>
+          </td>
+        );
+    }
+  };
 
   return (
     <div className="section">
@@ -169,22 +241,46 @@ export default function ReplenishmentTable() {
         )}
       </div>
 
+      <details className="column-visibility">
+        <summary>Columnas visibles</summary>
+        <div className="column-visibility-options">
+          {hideableColumns.map((column) => (
+            <label key={column.key} className="column-visibility-option">
+              <input
+                type="checkbox"
+                checked={visibleColumnKeys.includes(column.key)}
+                onChange={() => toggleColumn(column.key)}
+              />
+              <span>{column.label}</span>
+            </label>
+          ))}
+        </div>
+      </details>
+
       <div className="table-container">
         {loading && items.length === 0 ? (
           <table className="data-table">
             <thead>
               <tr>
-                {columns.map((column) => (
-                  <th key={column.key}>{column.label}</th>
+                {visibleColumns.map((column) => (
+                  <th
+                    key={column.key}
+                    className={column.key === 'action' ? 'cell-action-sticky' : ''}
+                  >
+                    {column.label}
+                  </th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {Array.from({ length: 8 }).map((_, rowIndex) => (
                 <tr key={rowIndex}>
-                  {columns.map((column) => (
-                    <td key={column.key}>
-                      <div className="skeleton" style={{ width: '80px' }} />
+                  {visibleColumns.map((column) => (
+                    <td
+                      key={column.key}
+                      className={column.key === 'action' ? 'cell-action-sticky' : ''}
+                    >
+                      <div className="skeleton" style={{ width: column.key === 'action' ? '30px' : '80px' }} />
                     </td>
                   ))}
                 </tr>
@@ -202,10 +298,13 @@ export default function ReplenishmentTable() {
           <table className="data-table">
             <thead>
               <tr>
-                {columns.map((column) => (
+                {visibleColumns.map((column) => (
                   <th
                     key={column.key}
-                    className={sortBy === column.key ? 'sorted' : ''}
+                    className={[
+                      sortBy === column.key ? 'sorted' : '',
+                      column.key === 'action' ? 'cell-action-sticky' : '',
+                    ].filter(Boolean).join(' ')}
                     onClick={() => column.sortable && handleSort(column.key)}
                     style={{ cursor: column.sortable ? 'pointer' : 'default' }}
                   >
@@ -218,23 +317,7 @@ export default function ReplenishmentTable() {
             <tbody>
               {items.map((item) => (
                 <tr key={item.id}>
-                  <td className="cell-sku">{item.sku}</td>
-                  <td style={{ maxWidth: '420px', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {item.name}
-                  </td>
-                  <td>{item.category || '-'}</td>
-                  <td>{item.subcategory || '-'}</td>
-                  <td className="cell-stock">{formatNumber(item.quantity)}</td>
-                  <td>
-                    <button
-                      type="button"
-                      className="btn btn-success btn-compact"
-                      disabled={markingId === item.id}
-                      onClick={() => handleReplenished(item.id)}
-                    >
-                      {markingId === item.id ? 'Marcando...' : 'REPUESTO'}
-                    </button>
-                  </td>
+                  {visibleColumns.map((column) => renderCell(item, column.key))}
                 </tr>
               ))}
             </tbody>

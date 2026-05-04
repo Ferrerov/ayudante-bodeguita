@@ -280,6 +280,15 @@ body {
   border-radius: var(--radius-sm);
 }
 
+.btn-icon-compact {
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  padding: 0;
+  font-size: 1rem;
+  line-height: 1;
+}
+
 .btn-secondary {
   background: var(--color-bg-input);
   color: var(--color-text);
@@ -407,6 +416,51 @@ body {
   box-shadow: 0 0 0 4px rgba(28, 28, 28, 0.05);
 }
 
+/* === Column Visibility === */
+.column-visibility {
+  margin-bottom: 16px;
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.column-visibility summary {
+  padding: 12px 16px;
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 700;
+  list-style-position: inside;
+}
+
+.column-visibility-options {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 0 16px 16px;
+}
+
+.column-visibility-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 8px 10px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+}
+
+.column-visibility-option input {
+  accent-color: var(--color-accent);
+}
+
 /* === Data Table === */
 .table-container {
   overflow-x: auto;
@@ -484,6 +538,31 @@ body {
 
 .data-table tbody tr:last-child td {
   border-bottom: none;
+}
+
+.data-table th.cell-action-sticky,
+.data-table td.cell-action-sticky {
+  position: sticky;
+  right: 0;
+  width: 58px;
+  min-width: 58px;
+  max-width: 58px;
+  padding: 8px 10px;
+  text-align: center;
+  box-shadow: -8px 0 12px rgba(28, 28, 28, 0.06);
+}
+
+.data-table th.cell-action-sticky {
+  z-index: 12;
+}
+
+.data-table td.cell-action-sticky {
+  z-index: 2;
+  background: var(--color-bg-card);
+}
+
+.data-table tbody tr:hover td.cell-action-sticky {
+  background: var(--color-bg-card-hover);
 }
 
 /* Cell variants */
@@ -817,6 +896,15 @@ main {
   .filter-select {
     width: 100%;
     min-width: 100%;
+  }
+
+  .column-visibility-options {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .column-visibility-option {
+    width: 100%;
   }
 
   .stats-bar {
