@@ -6,6 +6,7 @@ interface UnifiedQuery {
   search?: string;
   category?: string;
   subcategory?: string;
+  supplier?: string;
   type?: string;
   status?: string;
   sortBy?: string;
@@ -76,6 +77,14 @@ export interface SkuMismatch {
 @Injectable()
 export class ProductsService {
   constructor(private readonly prisma: PrismaService) {}
+  private static readonly WITHOUT_SUPPLIER_FILTER = '__WITHOUT_SUPPLIER__';
+
+  private toWhereArray(
+    value: Prisma.ProductWhereInput | Prisma.ProductWhereInput[] | undefined,
+  ): Prisma.ProductWhereInput[] {
+    if (!value) return [];
+    return Array.isArray(value) ? value : [value];
+  }
 
   private readonly skuRangeRules: SkuRangeRule[] = [
     { id: 1, name: 'CERVEZAS', min: 100, max: 199 },
@@ -166,6 +175,18 @@ export class ProductsService {
     }
     if (query.subcategory) {
       where.subcategory = { equals: query.subcategory, mode: 'insensitive' };
+    }
+    if (query.supplier) {
+      if (query.supplier === ProductsService.WITHOUT_SUPPLIER_FILTER) {
+        where.AND = [
+          ...this.toWhereArray(where.AND),
+          {
+            OR: [{ supplier: null }, { supplier: '' }],
+          },
+        ];
+      } else {
+        where.supplier = { equals: query.supplier, mode: 'insensitive' };
+      }
     }
     if (query.type) {
       where.type = { equals: query.type, mode: 'insensitive' };
@@ -273,7 +294,7 @@ export class ProductsService {
    * Returns distinct values for filter dropdowns.
    */
   async getFilterOptions() {
-    const [categories, subcategories, types, statuses] = await Promise.all([
+    const [categories, subcategories, types, statuses, rawProductSuppliers, supplierRows] = await Promise.all([
       this.prisma.product.findMany({
         distinct: ['category'],
         select: { category: true },
@@ -296,13 +317,47 @@ export class ProductsService {
         select: { status: true },
         orderBy: { status: 'asc' },
       }),
+      this.prisma.product.findMany({
+        distinct: ['supplier'],
+        select: { supplier: true },
+        where: { supplier: { not: null } },
+        orderBy: { supplier: 'asc' },
+      }),
+      this.prisma.supplier.findMany({
+        select: { razonSocial: true },
+        orderBy: { razonSocial: 'asc' },
+      }),
     ]);
+
+    const normalizedProductSupplierMap = new Map<string, string>();
+    for (const row of rawProductSuppliers) {
+      const name = row.supplier?.trim();
+      if (!name) continue;
+      normalizedProductSupplierMap.set(this.normalizeText(name), name);
+    }
+
+    const connectedSuppliers: string[] = [];
+    for (const row of supplierRows) {
+      const supplierName = row.razonSocial?.trim();
+      if (!supplierName) continue;
+      const normalized = this.normalizeText(supplierName);
+      if (normalizedProductSupplierMap.has(normalized)) {
+        connectedSuppliers.push(supplierName);
+        normalizedProductSupplierMap.delete(normalized);
+      }
+    }
+
+    const unmatchedProductSuppliers = Array.from(normalizedProductSupplierMap.values()).sort((a, b) =>
+      a.localeCompare(b, 'es-AR', { sensitivity: 'base' }),
+    );
 
     return {
       categories: categories.map((c) => c.category).filter(Boolean),
       subcategories: subcategories.map((s) => s.subcategory).filter(Boolean),
       types: types.map((t) => t.type),
       statuses: statuses.map((s) => s.status),
+      suppliers: [...connectedSuppliers, ...unmatchedProductSuppliers],
+      withoutSupplierFilterValue: ProductsService.WITHOUT_SUPPLIER_FILTER,
     };
   }
 

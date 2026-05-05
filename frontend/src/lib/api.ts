@@ -88,6 +88,8 @@ export interface FilterOptions {
   subcategories: string[];
   types: string[];
   statuses: string[];
+  suppliers: string[];
+  withoutSupplierFilterValue: string;
 }
 
 export interface ReplenishmentItem {
@@ -330,6 +332,7 @@ export async function fetchUnified(params: {
   search?: string;
   category?: string;
   subcategory?: string;
+  supplier?: string;
   type?: string;
   status?: string;
   sortBy?: string;

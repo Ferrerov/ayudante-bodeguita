@@ -33,6 +33,7 @@ export default function ProductsTable() {
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('');
   const [subcategory, setSubcategory] = useState('');
+  const [supplier, setSupplier] = useState('');
   const [type, setType] = useState('');
   const [status, setStatus] = useState('');
   const [sortBy, setSortBy] = useState('');
@@ -66,6 +67,7 @@ export default function ProductsTable() {
         search: debouncedSearch || undefined,
         category: category || undefined,
         subcategory: subcategory || undefined,
+        supplier: supplier || undefined,
         type: type || undefined,
         status: status || undefined,
         sortBy: sortBy || undefined,
@@ -81,7 +83,7 @@ export default function ProductsTable() {
     } finally {
       setLoading(false);
     }
-  }, [debouncedSearch, category, subcategory, type, status, sortBy, sortOrder, page, limit]);
+  }, [debouncedSearch, category, subcategory, supplier, type, status, sortBy, sortOrder, page, limit]);
 
   useEffect(() => {
     loadData();
@@ -196,6 +198,20 @@ export default function ProductsTable() {
             >
               <option value="">Todos los sub rubros</option>
               {filters.subcategories.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+
+            <select
+              className="filter-select"
+              value={supplier}
+              onChange={handleFilterChange(setSupplier)}
+            >
+              <option value="">Todos los proveedores</option>
+              <option value={filters.withoutSupplierFilterValue}>Sin proveedor asignado</option>
+              {filters.suppliers.map((s) => (
                 <option key={s} value={s}>
                   {s}
                 </option>
