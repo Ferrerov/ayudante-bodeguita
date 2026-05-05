@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma';
 
@@ -131,6 +131,76 @@ export class ReplenishmentService {
         quantity: 0,
         status: 'REPLENISHED',
         replenishedAt: new Date(),
+      },
+    });
+  }
+
+  async updateQuantity(id: number, quantity: number) {
+    if (!Number.isFinite(quantity) || quantity < 0) {
+      throw new BadRequestException(
+        'La cantidad debe ser un numero mayor o igual a 0.',
+      );
+    }
+
+    const item = await this.prisma.replenishmentItem.findUnique({
+      where: { id },
+    });
+
+    if (!item) {
+      throw new NotFoundException('Item de reposicion no encontrado.');
+    }
+
+    return this.prisma.replenishmentItem.update({
+      where: { id },
+      data: {
+        quantity,
+        status: quantity > 0 ? 'PENDING' : 'REPLENISHED',
+        replenishedAt: quantity > 0 ? null : new Date(),
+      },
+    });
+  }
+
+  async addManual(input: { sku: string; quantity: number }) {
+    const sku = input.sku.trim();
+    if (!sku) {
+      throw new BadRequestException('Debe indicar un SKU.');
+    }
+    if (!Number.isFinite(input.quantity) || input.quantity <= 0) {
+      throw new BadRequestException('La cantidad debe ser mayor a 0.');
+    }
+
+    const product = await this.prisma.product.findUnique({
+      where: { sku },
+      select: { sku: true, name: true },
+    });
+
+    if (!product) {
+      throw new NotFoundException('Producto no encontrado en el catalogo.');
+    }
+
+    const existing = await this.prisma.replenishmentItem.findUnique({
+      where: { sku: product.sku },
+      select: { id: true, quantity: true },
+    });
+
+    if (existing) {
+      return this.prisma.replenishmentItem.update({
+        where: { id: existing.id },
+        data: {
+          quantity: Number(existing.quantity) + input.quantity,
+          status: 'PENDING',
+          replenishedAt: null,
+          name: product.name,
+        },
+      });
+    }
+
+    return this.prisma.replenishmentItem.create({
+      data: {
+        sku: product.sku,
+        name: product.name,
+        quantity: input.quantity,
+        status: 'PENDING',
       },
     });
   }

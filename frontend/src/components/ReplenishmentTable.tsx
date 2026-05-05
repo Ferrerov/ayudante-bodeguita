@@ -2,11 +2,15 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import {
+  addReplenishmentManual,
   fetchReplenishment,
   fetchReplenishmentFilters,
+  fetchUnified,
   markReplenished,
   ReplenishmentFilters,
   ReplenishmentItem,
+  UnifiedProduct,
+  updateReplenishmentQuantity,
 } from '@/lib/api';
 
 type ReplenishmentColumnKey = 'sku' | 'name' | 'category' | 'subcategory' | 'quantity' | 'action';
@@ -18,10 +22,6 @@ type ReplenishmentColumn = {
   sortable: boolean;
 };
 
-function formatNumber(value: number): string {
-  return value.toLocaleString('es-AR', { maximumFractionDigits: 2 });
-}
-
 export default function ReplenishmentTable() {
   const [items, setItems] = useState<ReplenishmentItem[]>([]);
   const [filters, setFilters] = useState<ReplenishmentFilters | null>(null);
@@ -31,6 +31,14 @@ export default function ReplenishmentTable() {
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [limit] = useState(50);
+  const [savingQuantityId, setSavingQuantityId] = useState<number | null>(null);
+  const [editingQuantities, setEditingQuantities] = useState<Record<number, string>>({});
+  const [manualSku, setManualSku] = useState('');
+  const [manualQuantity, setManualQuantity] = useState('1');
+  const [manualLoading, setManualLoading] = useState(false);
+  const [manualError, setManualError] = useState('');
+  const [manualOptions, setManualOptions] = useState<UnifiedProduct[]>([]);
+  const [showDropdown, setShowDropdown] = useState(false);
 
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('');
@@ -92,6 +100,41 @@ export default function ReplenishmentTable() {
     loadData();
   }, [loadData]);
 
+  useEffect(() => {
+    setEditingQuantities((current) => {
+      const next: Record<number, string> = {};
+      items.forEach((item) => {
+        next[item.id] = current[item.id] ?? String(item.quantity);
+      });
+      return next;
+    });
+  }, [items]);
+
+  useEffect(() => {
+    const value = manualSku.trim();
+    if (value.length < 2) {
+      setManualOptions([]);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      try {
+        const result = await fetchUnified({
+          search: value,
+          page: 1,
+          limit: 12,
+          sortBy: 'name',
+          sortOrder: 'asc',
+        });
+        setManualOptions(result.data);
+      } catch {
+        setManualOptions([]);
+      }
+    }, 250);
+
+    return () => clearTimeout(timer);
+  }, [manualSku]);
+
   const handleSort = (field: ReplenishmentColumnKey) => {
     if (sortBy === field) {
       setSortOrder((current) => (current === 'asc' ? 'desc' : 'asc'));
@@ -113,6 +156,49 @@ export default function ReplenishmentTable() {
     }
   };
 
+  const handleQuantityChange = (id: number, value: string) => {
+    setEditingQuantities((current) => ({ ...current, [id]: value }));
+  };
+
+  const handleQuantitySave = async (id: number) => {
+    const raw = editingQuantities[id];
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed < 0) return;
+    
+    const item = items.find((i) => i.id === id);
+    if (item && parsed === item.quantity) return;
+
+    setSavingQuantityId(id);
+    try {
+      await updateReplenishmentQuantity(id, parsed);
+      await loadData();
+      loadFilters();
+    } finally {
+      setSavingQuantityId(null);
+    }
+  };
+
+  const handleManualAdd = async () => {
+    const sku = manualSku.trim();
+    const quantity = Number(manualQuantity);
+    if (!sku || !Number.isFinite(quantity) || quantity <= 0) return;
+
+    setManualError('');
+    setManualLoading(true);
+    try {
+      await addReplenishmentManual({ sku, quantity });
+      setManualSku('');
+      setManualQuantity('1');
+      await loadData();
+      loadFilters();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'No se pudo agregar el producto.';
+      setManualError(message);
+    } finally {
+      setManualLoading(false);
+    }
+  };
+
   const handleFilterChange = (setter: (value: string) => void) => (
     event: React.ChangeEvent<HTMLSelectElement>,
   ) => {
@@ -130,7 +216,7 @@ export default function ReplenishmentTable() {
     { key: 'name', label: 'Nombre', sortable: true },
     { key: 'category', label: 'Rubro', sortable: true },
     { key: 'subcategory', label: 'Sub Rubro', sortable: true },
-    { key: 'quantity', label: 'Cantidad Total a Reponer', sortable: true },
+    { key: 'quantity', label: 'CANT.', sortable: true },
     { key: 'action', label: '✓', sortable: false },
   ];
 
@@ -171,7 +257,30 @@ export default function ReplenishmentTable() {
       case 'subcategory':
         return <td key={columnKey}>{item.subcategory || '-'}</td>;
       case 'quantity':
-        return <td key={columnKey} className="cell-stock">{formatNumber(item.quantity)}</td>;
+        return (
+          <td key={columnKey} className="cell-stock cell-quantity-sticky">
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '8px' }}>
+              <input
+                className="replenishment-qty-input"
+                type="number"
+                min="0"
+                step="0.01"
+                value={editingQuantities[item.id] ?? String(item.quantity)}
+                disabled={savingQuantityId === item.id}
+                onChange={(event) => handleQuantityChange(item.id, event.target.value)}
+                onBlur={() => handleQuantitySave(item.id)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.currentTarget.blur();
+                  }
+                }}
+              />
+              {savingQuantityId === item.id && (
+                <div className="status-dot active" style={{ backgroundColor: 'var(--color-warning)', boxShadow: 'none' }} title="Guardando..." />
+              )}
+            </div>
+          </td>
+        );
       case 'action':
         return (
           <td key={columnKey} className="cell-action-sticky">
@@ -241,6 +350,79 @@ export default function ReplenishmentTable() {
         )}
       </div>
 
+      <div className="add-product-card">
+        <div className="add-product-card-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+          Agregar Producto Manualmente
+        </div>
+        <div className="add-product-form">
+          <div className="form-group flex-1" style={{ position: 'relative' }}>
+            <label htmlFor="manual-sku">Buscar por SKU o Nombre</label>
+            <input
+              id="manual-sku"
+              className="search-input"
+              type="text"
+              placeholder="Ej: 12345 o Yerba Mate..."
+              autoComplete="off"
+              value={manualSku}
+              onChange={(event) => {
+                setManualSku(event.target.value);
+                setShowDropdown(true);
+              }}
+              onFocus={() => setShowDropdown(true)}
+              onBlur={() => setTimeout(() => setShowDropdown(false), 200)}
+            />
+            {showDropdown && manualOptions.length > 0 && (
+              <ul className="custom-dropdown">
+                {manualOptions.map((option) => (
+                  <li
+                    key={option.id}
+                    className="custom-dropdown-item"
+                    onClick={() => {
+                      setManualSku(option.sku);
+                      setShowDropdown(false);
+                    }}
+                  >
+                    <span className="dropdown-sku">{option.sku}</span>
+                    <span className="dropdown-name">{option.name}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          
+          <div className="form-group">
+            <label htmlFor="manual-qty">Cantidad</label>
+            <input
+              id="manual-qty"
+              className="search-input"
+              style={{ width: '120px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}
+              type="number"
+              min="0.01"
+              step="0.01"
+              value={manualQuantity}
+              onChange={(event) => setManualQuantity(event.target.value)}
+            />
+          </div>
+          
+          <button
+            type="button"
+            className="btn btn-primary"
+            style={{ height: '46px', padding: '0 32px' }}
+            disabled={manualLoading}
+            onClick={handleManualAdd}
+          >
+            {manualLoading ? 'Agregando...' : 'Agregar'}
+          </button>
+        </div>
+        
+        {manualError && (
+          <div className="result result-error" style={{ marginTop: '0', padding: '10px 16px' }}>
+            {manualError}
+          </div>
+        )}
+      </div>
+
       <details className="column-visibility">
         <summary>Columnas visibles</summary>
         <div className="column-visibility-options">
@@ -303,6 +485,7 @@ export default function ReplenishmentTable() {
                     key={column.key}
                     className={[
                       sortBy === column.key ? 'sorted' : '',
+                      column.key === 'quantity' ? 'cell-quantity-sticky' : '',
                       column.key === 'action' ? 'cell-action-sticky' : '',
                     ].filter(Boolean).join(' ')}
                     onClick={() => column.sortable && handleSort(column.key)}

@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Patch, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { ReplenishmentService } from './replenishment.service';
 
 @Controller('replenishment')
@@ -34,5 +34,27 @@ export class ReplenishmentController {
   @Patch(':id/replenished')
   async markReplenished(@Param('id') id: string) {
     return this.replenishmentService.markReplenished(parseInt(id, 10));
+  }
+
+  @Patch(':id/quantity')
+  async updateQuantity(
+    @Param('id') id: string,
+    @Body('quantity') quantity?: number | string,
+  ) {
+    return this.replenishmentService.updateQuantity(
+      parseInt(id, 10),
+      Number(quantity),
+    );
+  }
+
+  @Post('manual')
+  async addManual(
+    @Body('sku') sku?: string,
+    @Body('quantity') quantity?: number | string,
+  ) {
+    return this.replenishmentService.addManual({
+      sku: String(sku ?? ''),
+      quantity: Number(quantity),
+    });
   }
 }

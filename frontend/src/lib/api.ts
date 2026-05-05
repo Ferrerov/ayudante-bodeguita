@@ -68,6 +68,11 @@ export interface ReplenishmentFilters {
   subcategories: string[];
 }
 
+export interface AddReplenishmentManualInput {
+  sku: string;
+  quantity: number;
+}
+
 export interface PurchaseReviewRow {
   sku: string;
   name: string;
@@ -257,6 +262,37 @@ export async function markReplenished(id: number): Promise<void> {
 
   if (!res.ok) {
     throw new Error('Error al marcar como repuesto');
+  }
+}
+
+export async function updateReplenishmentQuantity(
+  id: number,
+  quantity: number,
+): Promise<void> {
+  const res = await fetch(`${API_URL}/replenishment/${id}/quantity`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ quantity }),
+  });
+
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.message || 'Error al actualizar cantidad');
+  }
+}
+
+export async function addReplenishmentManual(
+  input: AddReplenishmentManualInput,
+): Promise<void> {
+  const res = await fetch(`${API_URL}/replenishment/manual`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.message || 'Error al agregar producto a reposicion');
   }
 }
 
