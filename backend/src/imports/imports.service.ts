@@ -44,6 +44,7 @@ const PRODUCT_REQUIRED_COLUMNS = [
 
 const PRICE_LIST_REQUIRED_COLUMNS = ['Codigo', 'Nombre', 'Precio Final'];
 const REPLENISHMENT_REQUIRED_COLUMNS = ['Codigo', 'Nombre', 'Cantidad'];
+const SUPPLIER_REQUIRED_COLUMNS = ['Personeria', 'Razon Social', 'Tipo Documeto', 'Documento'];
 const ALLOWED_TYPES = ['Producto', 'Combo', 'Servicio'];
 
 type JobType =
@@ -51,6 +52,7 @@ type JobType =
   | 'PRICE_LIST_BODEGUITA'
   | 'PRICE_LIST_DISTRIBUIDORA_MAYORISTA'
   | 'REPLENISHMENT'
+  | 'SUPPLIERS'
   | 'UNDO'
   | 'RESTORE';
 
@@ -621,6 +623,103 @@ export class ImportsService {
     }
   }
 
+  async importSuppliers(buffer: Buffer, filename: string): Promise<ImportResult> {
+    const job = await this.startJob('SUPPLIERS', filename, buffer);
+    const result: ImportResult = {
+      type: 'proveedores',
+      filename,
+      rowsRead: 0,
+      rowsImported: 0,
+      warnings: [],
+      errors: [],
+      jobId: job.id,
+    };
+
+    try {
+      const parsed = parseXlsx(buffer);
+      const missing = findMissingColumns(parsed.headers, SUPPLIER_REQUIRED_COLUMNS);
+      if (missing.length > 0) {
+        throw new BadRequestException(`Columnas obligatorias faltantes: ${missing.join(', ')}`);
+      }
+
+      result.rowsRead = parsed.rows.length;
+      const validSuppliers: Array<Record<string, unknown>> = [];
+      const seen = new Set<string>();
+
+      for (let i = 0; i < parsed.rows.length; i += 1) {
+        const row = parsed.rows[i];
+        const rowNum = i + 2;
+
+        const razonSocial = normalizeString(row['Razon Social']);
+        const personeria = normalizeString(row['Personeria']);
+        const documento = normalizeString(row['Documento']);
+        const code = normalizeString(row['Codigo']);
+
+        if (!razonSocial) {
+          result.errors.push(`Fila ${rowNum}: Razon Social vacia.`);
+          continue;
+        }
+
+        const dedupeKey = `${code || '-'}|${documento || '-'}|${razonSocial.toLowerCase()}`;
+        if (seen.has(dedupeKey)) {
+          result.errors.push(`Fila ${rowNum}: proveedor duplicado (${razonSocial}).`);
+          continue;
+        }
+        seen.add(dedupeKey);
+
+        validSuppliers.push({
+          personeria: personeria || null,
+          razonSocial,
+          nombreFantasia: normalizeString(row['Nombre Fantasia']) || null,
+          code: code || null,
+          tipoDocumento: normalizeString(row['Tipo Documeto']) || null,
+          documento: documento || null,
+          categoriaImpositiva: normalizeString(row['Categoria Impositiva']) || null,
+          telefono: normalizeString(row['Telefono']) || null,
+          celular: normalizeString(row['Celular']) || null,
+          email: normalizeString(row['Email']) || null,
+          web: normalizeString(row['Web']) || null,
+          observaciones: normalizeString(row['Observaciones']) || null,
+          provincia: normalizeString(row['Provincia']) || null,
+          ciudad: normalizeString(row['Ciudad']) || null,
+          domicilio: normalizeString(row['Domicilio']) || null,
+          pisoDepto: normalizeString(row['Piso Depto']) || null,
+          codigoPostal: normalizeString(row['Codigo Postal']) || null,
+          emailsEnvioFc: normalizeString(row['Emails Envio Fc']) || null,
+          tags: normalizeString(row['Tags']) || null,
+        });
+      }
+
+      if (result.errors.length > 0) {
+        await this.finishJob(job.id, 'FAILED', result);
+        return result;
+      }
+
+      const before = await this.prisma.supplier.findMany();
+      await this.prisma.$transaction(async (tx) => {
+        await tx.importSnapshot.create({
+          data: {
+            jobId: job.id,
+            domainType: 'SUPPLIERS',
+            scopeKey: null,
+            data: before as unknown as Prisma.InputJsonValue,
+          },
+        });
+        await tx.supplier.deleteMany();
+        if (validSuppliers.length > 0) {
+          await tx.supplier.createMany({ data: validSuppliers as any });
+        }
+      });
+
+      result.rowsImported = validSuppliers.length;
+      await this.finishJob(job.id, 'SUCCESS', result);
+      return result;
+    } catch (error) {
+      await this.failJob(job.id, result, error);
+      throw error;
+    }
+  }
+
   async parsePurchaseReviewFromText(text: string) {
     const parsed = this.parseTabularText(text);
     return this.normalizePurchaseRows(parsed.headers, parsed.rows);
@@ -764,6 +863,16 @@ export class ImportsService {
           await tx.priceListItem.deleteMany({ where: { priceListId: list.id } });
           if (items.length > 0) {
             await tx.priceListItem.createMany({ data: items as any });
+          }
+        });
+      }
+
+      if (snapshot.domainType === 'SUPPLIERS') {
+        const suppliers = (snapshot.data as Array<Record<string, unknown>>) ?? [];
+        await this.prisma.$transaction(async (tx) => {
+          await tx.supplier.deleteMany();
+          if (suppliers.length > 0) {
+            await tx.supplier.createMany({ data: suppliers as any });
           }
         });
       }

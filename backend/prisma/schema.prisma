@@ -147,3 +147,33 @@ model PriceListItem {
   @@index([sku])
   @@map("price_list_items")
 }
+
+model Supplier {
+  id                  Int      @id @default(autoincrement())
+  personeria          String?
+  razonSocial         String   @map("razon_social")
+  nombreFantasia      String?  @map("nombre_fantasia")
+  code                String?
+  tipoDocumento       String?  @map("tipo_documento")
+  documento           String?
+  categoriaImpositiva String?  @map("categoria_impositiva")
+  telefono            String?
+  celular             String?
+  email               String?
+  web                 String?
+  observaciones       String?
+  provincia           String?
+  ciudad              String?
+  domicilio           String?
+  pisoDepto           String?  @map("piso_depto")
+  codigoPostal        String?  @map("codigo_postal")
+  emailsEnvioFc       String?  @map("emails_envio_fc")
+  tags                String?
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  @@index([razonSocial])
+  @@index([documento])
+  @@index([provincia])
+  @@map("suppliers")
+}

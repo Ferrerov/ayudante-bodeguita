@@ -146,6 +146,30 @@ export class ImportsController {
     );
   }
 
+  @Post('suppliers')
+  @UseInterceptors(FileInterceptor('file'))
+  async importSuppliers(
+    @UploadedFile() file: Express.Multer.File,
+  ): Promise<any> {
+    if (!file) {
+      throw new BadRequestException('No se recibio ningun archivo.');
+    }
+
+    if (
+      !file.originalname.endsWith('.xlsx') &&
+      !file.originalname.endsWith('.xls')
+    ) {
+      throw new BadRequestException(
+        'El archivo debe ser un archivo Excel (.xlsx).',
+      );
+    }
+
+    return this.importsService.importSuppliers(
+      file.buffer,
+      file.originalname,
+    );
+  }
+
   @Post('price-lists/distribuidora-mayorista')
   @UseInterceptors(FileInterceptor('file'))
   async importDistribuidoraMayorista(

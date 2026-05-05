@@ -7,10 +7,11 @@ import CostsPricesTable from '@/components/CostsPricesTable';
 import ProductSkuCodesSection from '@/components/ProductSkuCodesSection';
 import ReplenishmentTable from '@/components/ReplenishmentTable';
 import ImportJobsManager from '@/components/ImportJobsManager';
-import { importProducts, importPriceList, importReplenishment } from '@/lib/api';
+import SuppliersTable from '@/components/SuppliersTable';
+import { importProducts, importPriceList, importReplenishment, importSuppliers } from '@/lib/api';
 
 export default function Home() {
-  const [activeSection, setActiveSection] = useState<'imports' | 'catalog' | 'costs-prices' | 'product-codes' | 'replenishment'>('imports');
+  const [activeSection, setActiveSection] = useState<'imports' | 'catalog' | 'suppliers' | 'costs-prices' | 'product-codes' | 'replenishment'>('imports');
   const [importsView, setImportsView] = useState<'new' | 'manage'>('new');
 
   return (
@@ -40,6 +41,13 @@ export default function Home() {
               onClick={() => setActiveSection('catalog')}
             >
               Catalogo
+            </button>
+            <button
+              type="button"
+              className={`section-tab ${activeSection === 'suppliers' ? 'active' : ''}`}
+              onClick={() => setActiveSection('suppliers')}
+            >
+              Proveedores
             </button>
             <button
               type="button"
@@ -109,6 +117,11 @@ export default function Home() {
                     description="Importar historial de ventas. Acumula cantidades vendidas como pendientes para reponer."
                     onImport={(file) => importReplenishment(file)}
                   />
+                  <ImportCard
+                    title="Proveedores"
+                    description="Importar padron de proveedores desde Contabilium. Reemplaza la lista vigente completa."
+                    onImport={(file) => importSuppliers(file)}
+                  />
                 </div>
               )}
 
@@ -117,6 +130,7 @@ export default function Home() {
           )}
 
           {activeSection === 'catalog' && <ProductsTable />}
+          {activeSection === 'suppliers' && <SuppliersTable />}
           {activeSection === 'costs-prices' && <CostsPricesTable />}
           {activeSection === 'product-codes' && <ProductSkuCodesSection />}
           {activeSection === 'replenishment' && <ReplenishmentTable />}
