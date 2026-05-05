@@ -61,6 +61,11 @@ const PRICE_LIST_NAMES: Record<string, string> = {
   DISTRIBUIDORA_MAYORISTA: 'Distribuidora Mayorista',
 };
 
+const IMPORT_TRANSACTION_OPTIONS = {
+  maxWait: 10_000,
+  timeout: 60_000,
+} as const;
+
 @Injectable()
 export class ImportsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -345,7 +350,7 @@ export class ImportsService {
         if (validProducts.length > 0) {
           await tx.product.createMany({ data: validProducts as any });
         }
-      });
+      }, IMPORT_TRANSACTION_OPTIONS);
 
       result.rowsImported = validProducts.length;
       await this.finishJob(job.id, 'SUCCESS', result);
@@ -464,7 +469,7 @@ export class ImportsService {
         if (validItems.length > 0) {
           await tx.priceListItem.createMany({ data: validItems as any });
         }
-      });
+      }, IMPORT_TRANSACTION_OPTIONS);
 
       result.rowsImported = validItems.length;
       await this.finishJob(job.id, 'SUCCESS', result);
@@ -612,7 +617,7 @@ export class ImportsService {
             },
           });
         }
-      });
+      }, IMPORT_TRANSACTION_OPTIONS);
 
       result.rowsImported = items.length;
       await this.finishJob(job.id, 'SUCCESS', result);
@@ -709,7 +714,7 @@ export class ImportsService {
         if (validSuppliers.length > 0) {
           await tx.supplier.createMany({ data: validSuppliers as any });
         }
-      });
+      }, IMPORT_TRANSACTION_OPTIONS);
 
       result.rowsImported = validSuppliers.length;
       await this.finishJob(job.id, 'SUCCESS', result);
@@ -834,7 +839,7 @@ export class ImportsService {
             },
           });
         }
-      });
+      }, IMPORT_TRANSACTION_OPTIONS);
       return;
     }
 
@@ -851,7 +856,7 @@ export class ImportsService {
           if (products.length > 0) {
             await tx.product.createMany({ data: products as any });
           }
-        });
+        }, IMPORT_TRANSACTION_OPTIONS);
       }
 
       if (snapshot.domainType === 'PRICE_LIST') {
@@ -864,7 +869,7 @@ export class ImportsService {
           if (items.length > 0) {
             await tx.priceListItem.createMany({ data: items as any });
           }
-        });
+        }, IMPORT_TRANSACTION_OPTIONS);
       }
 
       if (snapshot.domainType === 'SUPPLIERS') {
@@ -874,7 +879,7 @@ export class ImportsService {
           if (suppliers.length > 0) {
             await tx.supplier.createMany({ data: suppliers as any });
           }
-        });
+        }, IMPORT_TRANSACTION_OPTIONS);
       }
     }
   }
