@@ -6,10 +6,12 @@ import ProductsTable from '@/components/ProductsTable';
 import CostsPricesTable from '@/components/CostsPricesTable';
 import ProductSkuCodesSection from '@/components/ProductSkuCodesSection';
 import ReplenishmentTable from '@/components/ReplenishmentTable';
+import ImportJobsManager from '@/components/ImportJobsManager';
 import { importProducts, importPriceList, importReplenishment } from '@/lib/api';
 
 export default function Home() {
   const [activeSection, setActiveSection] = useState<'imports' | 'catalog' | 'costs-prices' | 'product-codes' | 'replenishment'>('imports');
+  const [importsView, setImportsView] = useState<'new' | 'manage'>('new');
 
   return (
     <>
@@ -65,32 +67,52 @@ export default function Home() {
           {activeSection === 'imports' && (
             <div className="section">
               <div className="section-title">Importar datos</div>
-
-              <div className="import-grid">
-                <ImportCard
-                  title="Productos"
-                  description="Importar catalogo de productos desde Contabilium. Reemplaza el catalogo vigente completo."
-                  onImport={(file) => importProducts(file)}
-                />
-
-                <ImportCard
-                  title="Lista Bodeguita"
-                  description="Importar lista de precios Bodeguita. Requiere catalogo de productos cargado."
-                  onImport={(file) => importPriceList(file, 'bodeguita')}
-                />
-
-                <ImportCard
-                  title="Lista Distribuidora Mayorista"
-                  description="Importar lista de precios Distribuidora Mayorista. Requiere catalogo de productos cargado."
-                  onImport={(file) => importPriceList(file, 'distribuidora-mayorista')}
-                />
-
-                <ImportCard
-                  title="Reposicion"
-                  description="Importar historial de ventas. Acumula cantidades vendidas como pendientes para reponer."
-                  onImport={(file) => importReplenishment(file)}
-                />
+              <div className="sections-nav" style={{ marginBottom: '20px' }}>
+                <button
+                  type="button"
+                  className={`section-tab ${importsView === 'new' ? 'active' : ''}`}
+                  onClick={() => setImportsView('new')}
+                >
+                  Nueva importacion
+                </button>
+                <button
+                  type="button"
+                  className={`section-tab ${importsView === 'manage' ? 'active' : ''}`}
+                  onClick={() => setImportsView('manage')}
+                >
+                  Gestionar importaciones
+                </button>
               </div>
+
+              {importsView === 'new' && (
+                <div className="import-grid">
+                  <ImportCard
+                    title="Productos"
+                    description="Importar catalogo de productos desde Contabilium. Reemplaza el catalogo vigente completo."
+                    onImport={(file) => importProducts(file)}
+                  />
+
+                  <ImportCard
+                    title="Lista Bodeguita"
+                    description="Importar lista de precios Bodeguita. Requiere catalogo de productos cargado."
+                    onImport={(file) => importPriceList(file, 'bodeguita')}
+                  />
+
+                  <ImportCard
+                    title="Lista Distribuidora Mayorista"
+                    description="Importar lista de precios Distribuidora Mayorista. Requiere catalogo de productos cargado."
+                    onImport={(file) => importPriceList(file, 'distribuidora-mayorista')}
+                  />
+
+                  <ImportCard
+                    title="Reposicion"
+                    description="Importar historial de ventas. Acumula cantidades vendidas como pendientes para reponer."
+                    onImport={(file) => importReplenishment(file)}
+                  />
+                </div>
+              )}
+
+              {importsView === 'manage' && <ImportJobsManager />}
             </div>
           )}
 

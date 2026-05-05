@@ -7,6 +7,51 @@ export interface ImportResult {
   rowsImported: number;
   warnings: string[];
   errors: string[];
+  jobId?: number;
+}
+
+export interface ImportJob {
+  id: number;
+  type: string;
+  status: string;
+  filename: string;
+  checksum: string | null;
+  rowsRead: number;
+  rowsImported: number;
+  warnings: string[];
+  errors: string[];
+  metadata: Record<string, unknown> | null;
+  undoOfJobId: number | null;
+  undoneAt: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ImportJobsResponse {
+  data: ImportJob[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+export interface ImportJobDetail extends ImportJob {
+  snapshots: Array<{
+    id: number;
+    domainType: string;
+    scopeKey: string | null;
+    rows: number;
+    createdAt: string;
+  }>;
+  movements: Array<{
+    id: number;
+    sku: string;
+    delta: number;
+    beforeQty: number;
+    afterQty: number;
+  }>;
 }
 
 export interface UnifiedProduct {
@@ -179,6 +224,50 @@ export async function importReplenishment(file: File): Promise<ImportResult> {
   }
 
   return res.json();
+}
+
+export async function fetchImportJobs(params?: {
+  type?: string;
+  status?: string;
+  page?: number;
+  limit?: number;
+}): Promise<ImportJobsResponse> {
+  const searchParams = new URLSearchParams();
+  Object.entries(params ?? {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== '') {
+      searchParams.set(key, String(value));
+    }
+  });
+
+  const res = await fetch(`${API_URL}/imports/jobs?${searchParams.toString()}`);
+  if (!res.ok) {
+    throw new Error('Error al cargar historial de importaciones');
+  }
+  return res.json();
+}
+
+export async function fetchImportJob(id: number): Promise<ImportJobDetail> {
+  const res = await fetch(`${API_URL}/imports/jobs/${id}`);
+  if (!res.ok) {
+    throw new Error('Error al cargar detalle de importacion');
+  }
+  return res.json();
+}
+
+export async function undoImportJob(id: number): Promise<void> {
+  const res = await fetch(`${API_URL}/imports/jobs/${id}/undo`, { method: 'POST' });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.message || 'Error al deshacer importacion');
+  }
+}
+
+export async function restoreImportJob(id: number): Promise<void> {
+  const res = await fetch(`${API_URL}/imports/jobs/${id}/restore`, { method: 'POST' });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.message || 'Error al restaurar importacion');
+  }
 }
 
 export async function fetchUnified(params: {

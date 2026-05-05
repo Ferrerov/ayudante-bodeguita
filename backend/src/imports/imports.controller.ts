@@ -1,6 +1,9 @@
 import {
   Controller,
   Post,
+  Get,
+  Param,
+  Query,
   Body,
   UploadedFile,
   UseInterceptors,
@@ -12,6 +15,36 @@ import { ImportsService } from './imports.service';
 @Controller('imports')
 export class ImportsController {
   constructor(private readonly importsService: ImportsService) {}
+
+  @Get('jobs')
+  async getJobs(
+    @Query('type') type?: string,
+    @Query('status') status?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.importsService.getJobs({
+      type,
+      status,
+      page: page ? parseInt(page, 10) : undefined,
+      limit: limit ? parseInt(limit, 10) : undefined,
+    });
+  }
+
+  @Get('jobs/:id')
+  async getJob(@Param('id') id: string) {
+    return this.importsService.getJob(parseInt(id, 10));
+  }
+
+  @Post('jobs/:id/undo')
+  async undoJob(@Param('id') id: string) {
+    return this.importsService.undoJob(parseInt(id, 10));
+  }
+
+  @Post('jobs/:id/restore')
+  async restoreJob(@Param('id') id: string) {
+    return this.importsService.restoreJob(parseInt(id, 10));
+  }
 
   @Post('purchase-review/text')
   async parsePurchaseFromText(

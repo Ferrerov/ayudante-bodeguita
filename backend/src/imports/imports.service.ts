@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma';
 import {
   parseXlsx,
@@ -7,8 +7,8 @@ import {
   parseDecimal,
   parseBoolean,
 } from './xlsx.utils';
-
-// -- Types --
+import { Prisma } from '@prisma/client';
+import { createHash } from 'crypto';
 
 interface ImportResult {
   type: string;
@@ -17,6 +17,7 @@ interface ImportResult {
   rowsImported: number;
   warnings: string[];
   errors: string[];
+  jobId?: number;
 }
 
 interface PurchaseReviewRow {
@@ -25,8 +26,6 @@ interface PurchaseReviewRow {
   cost: number;
   quantity: number;
 }
-
-// -- Required columns --
 
 const PRODUCT_REQUIRED_COLUMNS = [
   'Tipo',
@@ -45,19 +44,181 @@ const PRODUCT_REQUIRED_COLUMNS = [
 
 const PRICE_LIST_REQUIRED_COLUMNS = ['Codigo', 'Nombre', 'Precio Final'];
 const REPLENISHMENT_REQUIRED_COLUMNS = ['Codigo', 'Nombre', 'Cantidad'];
-
 const ALLOWED_TYPES = ['Producto', 'Combo', 'Servicio'];
+
+type JobType =
+  | 'PRODUCTS'
+  | 'PRICE_LIST_BODEGUITA'
+  | 'PRICE_LIST_DISTRIBUIDORA_MAYORISTA'
+  | 'REPLENISHMENT'
+  | 'UNDO'
+  | 'RESTORE';
+
+const PRICE_LIST_NAMES: Record<string, string> = {
+  BODEGUITA: 'Bodeguita',
+  DISTRIBUIDORA_MAYORISTA: 'Distribuidora Mayorista',
+};
 
 @Injectable()
 export class ImportsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  // ========== IMPORT PRODUCTOS ==========
+  async getJobs(params: {
+    type?: string;
+    status?: string;
+    page?: number;
+    limit?: number;
+  }) {
+    const page = Math.max(1, params.page ?? 1);
+    const limit = Math.max(1, Math.min(100, params.limit ?? 20));
+    const skip = (page - 1) * limit;
 
-  async importProducts(
-    buffer: Buffer,
-    filename: string,
-  ): Promise<ImportResult> {
+    const where: Prisma.ImportJobWhereInput = {};
+    if (params.type) where.type = params.type;
+    if (params.status) where.status = params.status;
+
+    const [total, rows] = await Promise.all([
+      this.prisma.importJob.count({ where }),
+      this.prisma.importJob.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+    ]);
+
+    return {
+      data: rows.map((row) => this.serializeJob(row)),
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  async getJob(id: number) {
+    const job = await this.prisma.importJob.findUnique({ where: { id } });
+    if (!job) throw new NotFoundException('Importacion no encontrada.');
+
+    const [snapshots, movements] = await Promise.all([
+      this.prisma.importSnapshot.findMany({ where: { jobId: id } }),
+      this.prisma.replenishmentMovement.findMany({ where: { jobId: id } }),
+    ]);
+
+    return {
+      ...this.serializeJob(job),
+      snapshots: snapshots.map((snapshot) => ({
+        id: snapshot.id,
+        domainType: snapshot.domainType,
+        scopeKey: snapshot.scopeKey,
+        rows: Array.isArray(snapshot.data) ? snapshot.data.length : 0,
+        createdAt: snapshot.createdAt,
+      })),
+      movements: movements.map((movement) => ({
+        id: movement.id,
+        sku: movement.sku,
+        delta: Number(movement.delta),
+        beforeQty: Number(movement.beforeQty),
+        afterQty: Number(movement.afterQty),
+      })),
+    };
+  }
+
+  async undoJob(id: number) {
+    const sourceJob = await this.prisma.importJob.findUnique({ where: { id } });
+    if (!sourceJob) throw new NotFoundException('Importacion no encontrada.');
+    if (sourceJob.status !== 'SUCCESS') {
+      throw new BadRequestException('Solo se pueden deshacer importaciones exitosas.');
+    }
+    if (sourceJob.undoneAt) {
+      throw new BadRequestException('Esta importacion ya fue deshecha.');
+    }
+
+    const undoJob = await this.prisma.importJob.create({
+      data: {
+        type: 'UNDO',
+        status: 'RUNNING',
+        filename: `undo-${sourceJob.id}`,
+        undoOfJobId: sourceJob.id,
+        metadata: { sourceJobType: sourceJob.type },
+      },
+    });
+
+    try {
+      await this.applyRestoreForJob(sourceJob.id);
+
+      await this.prisma.$transaction([
+        this.prisma.importJob.update({
+          where: { id: sourceJob.id },
+          data: { undoneAt: new Date() },
+        }),
+        this.prisma.importJob.update({
+          where: { id: undoJob.id },
+          data: {
+            status: 'SUCCESS',
+            rowsRead: 0,
+            rowsImported: 0,
+            warnings: [],
+            errors: [],
+            finishedAt: new Date(),
+          },
+        }),
+      ]);
+
+      return { ok: true, undoJobId: undoJob.id };
+    } catch (error) {
+      await this.prisma.importJob.update({
+        where: { id: undoJob.id },
+        data: {
+          status: 'FAILED',
+          errors: [this.errorMessage(error)],
+          finishedAt: new Date(),
+        },
+      });
+      throw error;
+    }
+  }
+
+  async restoreJob(id: number) {
+    const sourceJob = await this.prisma.importJob.findUnique({ where: { id } });
+    if (!sourceJob) throw new NotFoundException('Importacion no encontrada.');
+
+    const restoreJob = await this.prisma.importJob.create({
+      data: {
+        type: 'RESTORE',
+        status: 'RUNNING',
+        filename: `restore-${sourceJob.id}`,
+        metadata: { sourceJobType: sourceJob.type },
+      },
+    });
+
+    try {
+      await this.applyRestoreForJob(sourceJob.id);
+      await this.prisma.importJob.update({
+        where: { id: restoreJob.id },
+        data: {
+          status: 'SUCCESS',
+          warnings: [],
+          errors: [],
+          finishedAt: new Date(),
+        },
+      });
+      return { ok: true, restoreJobId: restoreJob.id };
+    } catch (error) {
+      await this.prisma.importJob.update({
+        where: { id: restoreJob.id },
+        data: {
+          status: 'FAILED',
+          errors: [this.errorMessage(error)],
+          finishedAt: new Date(),
+        },
+      });
+      throw error;
+    }
+  }
+
+  async importProducts(buffer: Buffer, filename: string): Promise<ImportResult> {
+    const job = await this.startJob('PRODUCTS', filename, buffer);
     const result: ImportResult = {
       type: 'productos',
       filename,
@@ -65,168 +226,144 @@ export class ImportsService {
       rowsImported: 0,
       warnings: [],
       errors: [],
+      jobId: job.id,
     };
 
-    // 1. Parsear xlsx
     let parsed;
     try {
       parsed = parseXlsx(buffer);
-    } catch (err) {
-      throw new BadRequestException(
-        `Error al leer el archivo: ${(err as Error).message}`,
-      );
-    }
-
-    // 2. Validar columnas obligatorias
-    const missing = findMissingColumns(
-      parsed.headers,
-      PRODUCT_REQUIRED_COLUMNS,
-    );
-    if (missing.length > 0) {
-      throw new BadRequestException(
-        `Columnas obligatorias faltantes: ${missing.join(', ')}`,
-      );
-    }
-
-    result.rowsRead = parsed.rows.length;
-
-    // 3. Parsear y validar filas
-    const skusSeen = new Set<string>();
-    const validProducts: Array<Record<string, unknown>> = [];
-
-    for (let i = 0; i < parsed.rows.length; i++) {
-      const row = parsed.rows[i];
-      const rowNum = i + 2; // +2 because row 1 is header in Excel
-
-      const sku = normalizeString(row['SKU']);
-      const name = normalizeString(row['Nombre']);
-      const type = normalizeString(row['Tipo']);
-
-      // Validaciones bloqueantes
-      if (!sku) {
-        result.errors.push(`Fila ${rowNum}: SKU vacío.`);
-        continue;
-      }
-      if (!name) {
-        result.errors.push(`Fila ${rowNum}: Nombre vacío.`);
-        continue;
-      }
-      if (!ALLOWED_TYPES.includes(type)) {
-        result.errors.push(
-          `Fila ${rowNum}: Tipo "${type}" no permitido (SKU: ${sku}).`,
-        );
-        continue;
-      }
-      if (skusSeen.has(sku)) {
-        result.errors.push(`Fila ${rowNum}: SKU "${sku}" duplicado.`);
-        continue;
+      const missing = findMissingColumns(parsed.headers, PRODUCT_REQUIRED_COLUMNS);
+      if (missing.length > 0) {
+        throw new BadRequestException(`Columnas obligatorias faltantes: ${missing.join(', ')}`);
       }
 
-      // Parsear numéricos
-      const internalCost = parseDecimal(row['Costo Interno']);
-      const basePrice = parseDecimal(row['Precio']);
-      const vat = parseDecimal(row['Iva']);
-      const finalPrice = parseDecimal(row['Precio Final']);
-      const profitability = parseDecimal(row['Rentabilidad']);
-      const stock = parseDecimal(row['Stock']);
-      const reservedStock = parseDecimal(row['Stock Reservado']);
-      const availableStock = parseDecimal(row['Stock Disponible']);
-      const minimumStock = parseDecimal(row['Stock Minimo']);
+      result.rowsRead = parsed.rows.length;
+      const skusSeen = new Set<string>();
+      const validProducts: Array<Record<string, unknown>> = [];
 
-      if (internalCost === null) {
-        result.errors.push(
-          `Fila ${rowNum}: Costo Interno inválido (SKU: ${sku}).`,
-        );
-        continue;
-      }
-      if (finalPrice === null) {
-        result.errors.push(
-          `Fila ${rowNum}: Precio Final inválido (SKU: ${sku}).`,
-        );
-        continue;
-      }
-      if (stock === null) {
-        result.errors.push(`Fila ${rowNum}: Stock inválido (SKU: ${sku}).`);
-        continue;
-      }
-      if (reservedStock === null) {
-        result.errors.push(
-          `Fila ${rowNum}: Stock Reservado inválido (SKU: ${sku}).`,
-        );
-        continue;
-      }
-      if (availableStock === null) {
-        result.errors.push(
-          `Fila ${rowNum}: Stock Disponible inválido (SKU: ${sku}).`,
-        );
-        continue;
+      for (let i = 0; i < parsed.rows.length; i++) {
+        const row = parsed.rows[i];
+        const rowNum = i + 2;
+
+        const sku = normalizeString(row['SKU']);
+        const name = normalizeString(row['Nombre']);
+        const type = normalizeString(row['Tipo']);
+
+        if (!sku) {
+          result.errors.push(`Fila ${rowNum}: SKU vacio.`);
+          continue;
+        }
+        if (!name) {
+          result.errors.push(`Fila ${rowNum}: Nombre vacio.`);
+          continue;
+        }
+        if (!ALLOWED_TYPES.includes(type)) {
+          result.errors.push(`Fila ${rowNum}: Tipo "${type}" no permitido (SKU: ${sku}).`);
+          continue;
+        }
+        if (skusSeen.has(sku)) {
+          result.errors.push(`Fila ${rowNum}: SKU "${sku}" duplicado.`);
+          continue;
+        }
+
+        const internalCost = parseDecimal(row['Costo Interno']);
+        const basePrice = parseDecimal(row['Precio']);
+        const vat = parseDecimal(row['Iva']);
+        const finalPrice = parseDecimal(row['Precio Final']);
+        const profitability = parseDecimal(row['Rentabilidad']);
+        const stock = parseDecimal(row['Stock']);
+        const reservedStock = parseDecimal(row['Stock Reservado']);
+        const availableStock = parseDecimal(row['Stock Disponible']);
+        const minimumStock = parseDecimal(row['Stock Minimo']);
+
+        if (internalCost === null) {
+          result.errors.push(`Fila ${rowNum}: Costo Interno invalido (SKU: ${sku}).`);
+          continue;
+        }
+        if (finalPrice === null) {
+          result.errors.push(`Fila ${rowNum}: Precio Final invalido (SKU: ${sku}).`);
+          continue;
+        }
+        if (stock === null || reservedStock === null || availableStock === null) {
+          result.errors.push(`Fila ${rowNum}: Stock invalido (SKU: ${sku}).`);
+          continue;
+        }
+
+        skusSeen.add(sku);
+        validProducts.push({
+          sku,
+          type,
+          parentSku: normalizeString(row['SKU Padre']) || null,
+          name,
+          attribute1: normalizeString(row['Atributo 1']) || null,
+          attribute1Variant: normalizeString(row['Variante De Atributo 1']) || null,
+          attribute2: normalizeString(row['Atributo 2']) || null,
+          attribute2Variant: normalizeString(row['Variante De Atributo 2']) || null,
+          barcode: normalizeString(row['Codigo Barras']) || null,
+          oemCode: normalizeString(row['Codigo Oem']) || null,
+          description: normalizeString(row['Descripcion']) || null,
+          status: normalizeString(row['Estado']),
+          currency: normalizeString(row['Moneda']) || null,
+          internalCost,
+          basePrice: basePrice ?? 0,
+          vat: vat ?? 0,
+          finalPrice,
+          profitability: profitability ?? 0,
+          stock,
+          reservedStock,
+          availableStock,
+          minimumStock: minimumStock ?? 0,
+          visibleInSales: parseBoolean(row['Visible En Ventas']),
+          category: normalizeString(row['Rubro']) || null,
+          subcategory: normalizeString(row['Sub Rubro']) || null,
+          supplier: normalizeString(row['Proveedor']) || null,
+          notes: normalizeString(row['Observaciones']) || null,
+          purchaseAccount: normalizeString(row['CC Compras']) || null,
+          salesAccount: normalizeString(row['CC Ventas']) || null,
+          inventoryAccount: normalizeString(row['CC Mercaderia']) || null,
+        });
       }
 
-      skusSeen.add(sku);
+      if (result.errors.length > 0) {
+        await this.finishJob(job.id, 'FAILED', result);
+        return result;
+      }
 
-      validProducts.push({
-        sku,
-        type,
-        parentSku: normalizeString(row['SKU Padre']) || null,
-        name,
-        attribute1: normalizeString(row['Atributo 1']) || null,
-        attribute1Variant:
-          normalizeString(row['Variante De Atributo 1']) || null,
-        attribute2: normalizeString(row['Atributo 2']) || null,
-        attribute2Variant:
-          normalizeString(row['Variante De Atributo 2']) || null,
-        barcode: normalizeString(row['Codigo Barras']) || null,
-        oemCode: normalizeString(row['Codigo Oem']) || null,
-        description: normalizeString(row['Descripcion']) || null,
-        status: normalizeString(row['Estado']),
-        currency: normalizeString(row['Moneda']) || null,
-        internalCost,
-        basePrice: basePrice ?? 0,
-        vat: vat ?? 0,
-        finalPrice,
-        profitability: profitability ?? 0,
-        stock,
-        reservedStock,
-        availableStock,
-        minimumStock: minimumStock ?? 0,
-        visibleInSales: parseBoolean(row['Visible En Ventas']),
-        category: normalizeString(row['Rubro']) || null,
-        subcategory: normalizeString(row['Sub Rubro']) || null,
-        supplier: normalizeString(row['Proveedor']) || null,
-        notes: normalizeString(row['Observaciones']) || null,
-        purchaseAccount: normalizeString(row['CC Compras']) || null,
-        salesAccount: normalizeString(row['CC Ventas']) || null,
-        inventoryAccount: normalizeString(row['CC Mercaderia']) || null,
-      });
-    }
-
-    // 4. Si hay errores, rechazar todo
-    if (result.errors.length > 0) {
-      return result;
-    }
-
-    // 5. Transacción: borrar y reinsertar
-    await this.prisma.$transaction(
-      async (tx) => {
+      const before = await this.prisma.product.findMany();
+      await this.prisma.$transaction(async (tx) => {
+        await tx.importSnapshot.create({
+          data: {
+            jobId: job.id,
+            domainType: 'PRODUCTS',
+            scopeKey: null,
+            data: before as unknown as Prisma.InputJsonValue,
+          },
+        });
         await tx.product.deleteMany();
         if (validProducts.length > 0) {
           await tx.product.createMany({ data: validProducts as any });
         }
-      },
-      { timeout: 60000 },
-    );
+      });
 
-    result.rowsImported = validProducts.length;
-    return result;
+      result.rowsImported = validProducts.length;
+      await this.finishJob(job.id, 'SUCCESS', result);
+      return result;
+    } catch (error) {
+      await this.failJob(job.id, result, error);
+      throw error;
+    }
   }
-
-  // ========== IMPORT LISTA DE PRECIOS ==========
 
   async importPriceList(
     buffer: Buffer,
     filename: string,
     listCode: string,
   ): Promise<ImportResult> {
+    const jobType: JobType =
+      listCode === 'BODEGUITA'
+        ? 'PRICE_LIST_BODEGUITA'
+        : 'PRICE_LIST_DISTRIBUIDORA_MAYORISTA';
+    const job = await this.startJob(jobType, filename, buffer);
     const result: ImportResult = {
       type: `lista-${listCode.toLowerCase()}`,
       filename,
@@ -234,149 +371,123 @@ export class ImportsService {
       rowsImported: 0,
       warnings: [],
       errors: [],
+      jobId: job.id,
     };
 
-    // 1. Verificar que existe catálogo de productos
-    const productCount = await this.prisma.product.count();
-    if (productCount === 0) {
-      throw new BadRequestException(
-        'No se puede importar una lista de precios sin un catálogo de productos cargado.',
-      );
-    }
-
-    // 2. Verificar que existe la lista
-    const priceList = await this.prisma.priceList.findUnique({
-      where: { code: listCode },
-    });
-    if (!priceList) {
-      throw new BadRequestException(
-        `Lista de precios "${listCode}" no encontrada.`,
-      );
-    }
-
-    // 3. Parsear xlsx
-    let parsed;
     try {
-      parsed = parseXlsx(buffer);
-    } catch (err) {
-      throw new BadRequestException(
-        `Error al leer el archivo: ${(err as Error).message}`,
-      );
-    }
-
-    // 4. Validar columnas
-    const missing = findMissingColumns(
-      parsed.headers,
-      PRICE_LIST_REQUIRED_COLUMNS,
-    );
-    if (missing.length > 0) {
-      throw new BadRequestException(
-        `Columnas obligatorias faltantes: ${missing.join(', ')}`,
-      );
-    }
-
-    result.rowsRead = parsed.rows.length;
-
-    // 5. Obtener SKUs existentes para validación de advertencias
-    const existingProducts = await this.prisma.product.findMany({
-      select: { sku: true, name: true },
-    });
-    const productMap = new Map(
-      existingProducts.map((p) => [p.sku, p.name]),
-    );
-
-    // 6. Parsear y validar filas
-    const codesSeen = new Set<string>();
-    const validItems: Array<Record<string, unknown>> = [];
-
-    for (let i = 0; i < parsed.rows.length; i++) {
-      const row = parsed.rows[i];
-      const rowNum = i + 2;
-
-      const code = normalizeString(row['Codigo']);
-      const name = normalizeString(row['Nombre']);
-      const finalPrice = parseDecimal(row['Precio Final']);
-
-      // Validaciones bloqueantes
-      if (!code) {
-        result.errors.push(`Fila ${rowNum}: Código vacío.`);
-        continue;
-      }
-      if (!name) {
-        result.errors.push(`Fila ${rowNum}: Nombre vacío.`);
-        continue;
-      }
-      if (finalPrice === null) {
-        result.errors.push(
-          `Fila ${rowNum}: Precio Final inválido (Código: ${code}).`,
-        );
-        continue;
-      }
-      if (codesSeen.has(code)) {
-        result.errors.push(`Fila ${rowNum}: Código "${code}" duplicado.`);
-        continue;
+      const productCount = await this.prisma.product.count();
+      if (productCount === 0) {
+        throw new BadRequestException('No se puede importar una lista sin catalogo de productos.');
       }
 
-      codesSeen.add(code);
+      const priceList = await this.ensurePriceList(listCode);
 
-      // Advertencias (no bloquean)
-      if (!productMap.has(code)) {
-        result.warnings.push(
-          `Fila ${rowNum}: Código "${code}" no existe en el catálogo de productos.`,
-        );
-      } else {
-        const productName = productMap.get(code);
-        if (productName && productName !== name) {
+      const parsed = parseXlsx(buffer);
+      const missing = findMissingColumns(parsed.headers, PRICE_LIST_REQUIRED_COLUMNS);
+      if (missing.length > 0) {
+        throw new BadRequestException(`Columnas obligatorias faltantes: ${missing.join(', ')}`);
+      }
+
+      result.rowsRead = parsed.rows.length;
+      const existingProducts = await this.prisma.product.findMany({ select: { sku: true, name: true } });
+      const productMap = new Map(existingProducts.map((p) => [p.sku, p.name]));
+
+      const codesSeen = new Set<string>();
+      const validItems: Array<Record<string, unknown>> = [];
+
+      for (let i = 0; i < parsed.rows.length; i++) {
+        const row = parsed.rows[i];
+        const rowNum = i + 2;
+
+        const code = normalizeString(row['Codigo']);
+        const name = normalizeString(row['Nombre']);
+        const finalPrice = parseDecimal(row['Precio Final']);
+
+        if (!code) {
+          result.errors.push(`Fila ${rowNum}: Codigo vacio.`);
+          continue;
+        }
+        if (!name) {
+          result.errors.push(`Fila ${rowNum}: Nombre vacio.`);
+          continue;
+        }
+        if (finalPrice === null) {
+          result.errors.push(`Fila ${rowNum}: Precio Final invalido (Codigo: ${code}).`);
+          continue;
+        }
+        if (codesSeen.has(code)) {
+          result.errors.push(`Fila ${rowNum}: Codigo "${code}" duplicado.`);
+          continue;
+        }
+
+        codesSeen.add(code);
+
+        if (!productMap.has(code)) {
+          result.warnings.push(`Fila ${rowNum}: Codigo "${code}" no existe en catalogo.`);
+        } else if (productMap.get(code) !== name) {
           result.warnings.push(
-            `Fila ${rowNum}: Nombre difiere para código "${code}". Producto: "${productName}", Lista: "${name}".`,
+            `Fila ${rowNum}: Nombre difiere para codigo "${code}". Producto: "${productMap.get(code)}", Lista: "${name}".`,
           );
         }
+
+        validItems.push({
+          priceListId: priceList.id,
+          sku: code,
+          name,
+          category: normalizeString(row['Rubro']) || null,
+          subcategory: normalizeString(row['Subrubro']) || null,
+          description: normalizeString(row['Descripcion']) || null,
+          basePrice: parseDecimal(row['Precio']) ?? 0,
+          vat: parseDecimal(row['Iva']) ?? 0,
+          finalPrice,
+        });
       }
 
-      const basePrice = parseDecimal(row['Precio']);
-      const vat = parseDecimal(row['Iva']);
+      if (result.errors.length > 0) {
+        await this.finishJob(job.id, 'FAILED', result);
+        return result;
+      }
 
-      validItems.push({
-        priceListId: priceList.id,
-        sku: code,
-        name,
-        category: normalizeString(row['Rubro']) || null,
-        subcategory: normalizeString(row['Subrubro']) || null,
-        description: normalizeString(row['Descripcion']) || null,
-        basePrice: basePrice ?? 0,
-        vat: vat ?? 0,
-        finalPrice,
-      });
-    }
-
-    // 7. Si hay errores, rechazar todo
-    if (result.errors.length > 0) {
-      return result;
-    }
-
-    // 8. Transacción: borrar items de esta lista y reinsertar
-    await this.prisma.$transaction(
-      async (tx) => {
-        await tx.priceListItem.deleteMany({
-          where: { priceListId: priceList.id },
+      const before = await this.prisma.priceListItem.findMany({ where: { priceListId: priceList.id } });
+      await this.prisma.$transaction(async (tx) => {
+        await tx.importSnapshot.create({
+          data: {
+            jobId: job.id,
+            domainType: 'PRICE_LIST',
+            scopeKey: listCode,
+            data: before as unknown as Prisma.InputJsonValue,
+          },
         });
+        await tx.priceListItem.deleteMany({ where: { priceListId: priceList.id } });
         if (validItems.length > 0) {
           await tx.priceListItem.createMany({ data: validItems as any });
         }
-      },
-      { timeout: 60000 },
-    );
+      });
 
-    result.rowsImported = validItems.length;
-    return result;
+      result.rowsImported = validItems.length;
+      await this.finishJob(job.id, 'SUCCESS', result);
+      return result;
+    } catch (error) {
+      await this.failJob(job.id, result, error);
+      throw error;
+    }
   }
 
-  // ========== IMPORT REPOSICION ==========
+  private async ensurePriceList(code: string) {
+    const name = PRICE_LIST_NAMES[code];
+    if (!name) {
+      throw new BadRequestException(`Lista de precios "${code}" no soportada.`);
+    }
 
-  async importReplenishment(
-    buffer: Buffer,
-    filename: string,
-  ): Promise<ImportResult> {
+    return this.prisma.priceList.upsert({
+      where: { code },
+      update: {},
+      create: { code, name },
+    });
+  }
+
+  async importReplenishment(buffer: Buffer, filename: string): Promise<ImportResult> {
+    const job = await this.startJob('REPLENISHMENT', filename, buffer);
     const result: ImportResult = {
       type: 'reposicion',
       filename,
@@ -384,125 +495,130 @@ export class ImportsService {
       rowsImported: 0,
       warnings: [],
       errors: [],
+      jobId: job.id,
     };
 
-    const productCount = await this.prisma.product.count();
-    if (productCount === 0) {
-      throw new BadRequestException(
-        'No se puede importar reposicion sin un catalogo de productos cargado.',
-      );
-    }
-
-    let parsed;
     try {
-      parsed = parseXlsx(buffer);
-    } catch (err) {
-      throw new BadRequestException(
-        `Error al leer el archivo: ${(err as Error).message}`,
-      );
-    }
-
-    const missing = findMissingColumns(
-      parsed.headers,
-      REPLENISHMENT_REQUIRED_COLUMNS,
-    );
-    if (missing.length > 0) {
-      throw new BadRequestException(
-        `Columnas obligatorias faltantes: ${missing.join(', ')}`,
-      );
-    }
-
-    result.rowsRead = parsed.rows.length;
-
-    const grouped = new Map<string, { sku: string; name: string; quantity: number }>();
-
-    for (let i = 0; i < parsed.rows.length; i += 1) {
-      const row = parsed.rows[i];
-      const rowNum = i + 2;
-      const sku = normalizeString(row['Codigo']);
-      const name = normalizeString(row['Nombre']);
-      const quantity = parseDecimal(row['Cantidad']);
-
-      if (!sku) {
-        result.errors.push(`Fila ${rowNum}: Codigo vacio.`);
-        continue;
-      }
-      if (!name) {
-        result.errors.push(`Fila ${rowNum}: Nombre vacio.`);
-        continue;
-      }
-      if (quantity === null) {
-        result.errors.push(
-          `Fila ${rowNum}: Cantidad invalida (Codigo: ${sku}).`,
-        );
-        continue;
+      const productCount = await this.prisma.product.count();
+      if (productCount === 0) {
+        throw new BadRequestException('No se puede importar reposicion sin catalogo de productos cargado.');
       }
 
-      const replenishmentQuantity = Math.abs(quantity);
-      if (replenishmentQuantity === 0) {
-        result.warnings.push(
-          `Fila ${rowNum}: Cantidad cero omitida (Codigo: ${sku}).`,
-        );
-        continue;
+      const parsed = parseXlsx(buffer);
+      const missing = findMissingColumns(parsed.headers, REPLENISHMENT_REQUIRED_COLUMNS);
+      if (missing.length > 0) {
+        throw new BadRequestException(`Columnas obligatorias faltantes: ${missing.join(', ')}`);
       }
 
-      const current = grouped.get(sku);
-      if (current) {
-        current.quantity += replenishmentQuantity;
-      } else {
-        grouped.set(sku, { sku, name, quantity: replenishmentQuantity });
-      }
-    }
+      result.rowsRead = parsed.rows.length;
+      const grouped = new Map<string, { sku: string; name: string; quantity: number }>();
 
-    if (result.errors.length > 0) {
+      for (let i = 0; i < parsed.rows.length; i += 1) {
+        const row = parsed.rows[i];
+        const rowNum = i + 2;
+        const sku = normalizeString(row['Codigo']);
+        const name = normalizeString(row['Nombre']);
+        const quantity = parseDecimal(row['Cantidad']);
+
+        if (!sku) {
+          result.errors.push(`Fila ${rowNum}: Codigo vacio.`);
+          continue;
+        }
+        if (!name) {
+          result.errors.push(`Fila ${rowNum}: Nombre vacio.`);
+          continue;
+        }
+        if (quantity === null) {
+          result.errors.push(`Fila ${rowNum}: Cantidad invalida (Codigo: ${sku}).`);
+          continue;
+        }
+
+        const replenishmentQuantity = Math.abs(quantity);
+        if (replenishmentQuantity === 0) {
+          result.warnings.push(`Fila ${rowNum}: Cantidad cero omitida (Codigo: ${sku}).`);
+          continue;
+        }
+
+        const current = grouped.get(sku);
+        if (current) {
+          current.quantity += replenishmentQuantity;
+        } else {
+          grouped.set(sku, { sku, name, quantity: replenishmentQuantity });
+        }
+      }
+
+      if (result.errors.length > 0) {
+        await this.finishJob(job.id, 'FAILED', result);
+        return result;
+      }
+
+      const products = await this.prisma.product.findMany({
+        where: { sku: { in: Array.from(grouped.keys()) } },
+        select: { sku: true, name: true },
+      });
+      const productMap = new Map(products.map((product) => [product.sku, product]));
+      const items = Array.from(grouped.values()).filter((item) => {
+        const product = productMap.get(item.sku);
+        if (!product) {
+          result.warnings.push(`Codigo "${item.sku}" no existe en catalogo y fue omitido.`);
+          return false;
+        }
+        if (product.name !== item.name) {
+          result.warnings.push(
+            `Codigo "${item.sku}": nombre difiere. Catalogo: "${product.name}", Archivo: "${item.name}".`,
+          );
+        }
+        item.name = product.name;
+        return true;
+      });
+
+      await this.prisma.$transaction(async (tx) => {
+        for (const item of items) {
+          const existing = await tx.replenishmentItem.findUnique({ where: { sku: item.sku } });
+          const beforeQty = Number(existing?.quantity ?? 0);
+          const afterQty = beforeQty + item.quantity;
+
+          if (existing) {
+            await tx.replenishmentItem.update({
+              where: { sku: item.sku },
+              data: {
+                name: item.name,
+                quantity: { increment: item.quantity },
+                status: 'PENDING',
+                replenishedAt: null,
+              },
+            });
+          } else {
+            await tx.replenishmentItem.create({
+              data: {
+                sku: item.sku,
+                name: item.name,
+                quantity: item.quantity,
+                status: 'PENDING',
+                replenishedAt: null,
+              },
+            });
+          }
+
+          await tx.replenishmentMovement.create({
+            data: {
+              jobId: job.id,
+              sku: item.sku,
+              delta: item.quantity,
+              beforeQty,
+              afterQty,
+            },
+          });
+        }
+      });
+
+      result.rowsImported = items.length;
+      await this.finishJob(job.id, 'SUCCESS', result);
       return result;
+    } catch (error) {
+      await this.failJob(job.id, result, error);
+      throw error;
     }
-
-    const products = await this.prisma.product.findMany({
-      where: { sku: { in: Array.from(grouped.keys()) } },
-      select: { sku: true, name: true },
-    });
-    const productMap = new Map(products.map((product) => [product.sku, product]));
-    const items = Array.from(grouped.values()).filter((item) => {
-      const product = productMap.get(item.sku);
-      if (!product) {
-        result.warnings.push(
-          `Codigo "${item.sku}" no existe en el catalogo de productos y fue omitido.`,
-        );
-        return false;
-      }
-      if (product.name !== item.name) {
-        result.warnings.push(
-          `Codigo "${item.sku}": nombre difiere. Catalogo: "${product.name}", Archivo: "${item.name}".`,
-        );
-      }
-      item.name = product.name;
-      return true;
-    });
-
-    await this.prisma.$transaction(
-      items.map((item) =>
-        this.prisma.replenishmentItem.upsert({
-          where: { sku: item.sku },
-          create: {
-            sku: item.sku,
-            name: item.name,
-            quantity: item.quantity,
-            status: 'PENDING',
-            replenishedAt: null,
-          },
-          update: {
-            name: item.name,
-            quantity: { increment: item.quantity },
-            status: 'PENDING',
-            replenishedAt: null,
-          },
-        }),
-      ),
-    );
-
-    result.rowsImported = items.length;
-    return result;
   }
 
   async parsePurchaseReviewFromText(text: string) {
@@ -522,6 +638,138 @@ export class ImportsService {
     return this.normalizePurchaseRows(parsed.headers, parsed.rows);
   }
 
+  private async startJob(type: JobType, filename: string, buffer?: Buffer) {
+    return this.prisma.importJob.create({
+      data: {
+        type,
+        status: 'RUNNING',
+        filename,
+        checksum: buffer ? createHash('sha256').update(buffer).digest('hex') : null,
+      },
+    });
+  }
+
+  private async finishJob(jobId: number, status: 'SUCCESS' | 'FAILED', result: ImportResult) {
+    await this.prisma.importJob.update({
+      where: { id: jobId },
+      data: {
+        status,
+        rowsRead: result.rowsRead,
+        rowsImported: result.rowsImported,
+        warnings: result.warnings,
+        errors: result.errors,
+        finishedAt: new Date(),
+      },
+    });
+  }
+
+  private async failJob(jobId: number, result: ImportResult, error: unknown) {
+    result.errors.push(this.errorMessage(error));
+    await this.finishJob(jobId, 'FAILED', result);
+  }
+
+  private errorMessage(error: unknown) {
+    if (error instanceof Error) return error.message;
+    return 'Error inesperado durante la importacion.';
+  }
+
+  private serializeJob(job: any) {
+    return {
+      id: job.id,
+      type: job.type,
+      status: job.status,
+      filename: job.filename,
+      checksum: job.checksum,
+      rowsRead: job.rowsRead,
+      rowsImported: job.rowsImported,
+      warnings: Array.isArray(job.warnings) ? job.warnings : [],
+      errors: Array.isArray(job.errors) ? job.errors : [],
+      metadata: job.metadata ?? null,
+      undoOfJobId: job.undoOfJobId,
+      undoneAt: job.undoneAt,
+      startedAt: job.startedAt,
+      finishedAt: job.finishedAt,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
+    };
+  }
+
+  private async applyRestoreForJob(sourceJobId: number) {
+    const sourceJob = await this.prisma.importJob.findUnique({ where: { id: sourceJobId } });
+    if (!sourceJob) throw new NotFoundException('Importacion no encontrada.');
+
+    if (sourceJob.type === 'REPLENISHMENT') {
+      const movements = await this.prisma.replenishmentMovement.findMany({
+        where: { jobId: sourceJobId },
+      });
+
+      await this.prisma.$transaction(async (tx) => {
+        for (const movement of movements) {
+          const item = await tx.replenishmentItem.findUnique({ where: { sku: movement.sku } });
+          const currentQty = Number(item?.quantity ?? 0);
+          const nextQty = Math.max(0, currentQty - Number(movement.delta));
+
+          if (!item && nextQty === 0) {
+            continue;
+          }
+
+          if (!item) {
+            await tx.replenishmentItem.create({
+              data: {
+                sku: movement.sku,
+                name: movement.sku,
+                quantity: 0,
+                status: 'REPLENISHED',
+                replenishedAt: new Date(),
+              },
+            });
+            continue;
+          }
+
+          await tx.replenishmentItem.update({
+            where: { sku: movement.sku },
+            data: {
+              quantity: nextQty,
+              status: nextQty > 0 ? 'PENDING' : 'REPLENISHED',
+              replenishedAt: nextQty > 0 ? null : new Date(),
+            },
+          });
+        }
+      });
+      return;
+    }
+
+    const snapshots = await this.prisma.importSnapshot.findMany({ where: { jobId: sourceJobId } });
+    if (snapshots.length === 0) {
+      throw new BadRequestException('La importacion no tiene snapshot para restaurar.');
+    }
+
+    for (const snapshot of snapshots) {
+      if (snapshot.domainType === 'PRODUCTS') {
+        const products = (snapshot.data as Array<Record<string, unknown>>) ?? [];
+        await this.prisma.$transaction(async (tx) => {
+          await tx.product.deleteMany();
+          if (products.length > 0) {
+            await tx.product.createMany({ data: products as any });
+          }
+        });
+      }
+
+      if (snapshot.domainType === 'PRICE_LIST') {
+        const list = await this.prisma.priceList.findUnique({ where: { code: snapshot.scopeKey ?? '' } });
+        if (!list) continue;
+        const items = (snapshot.data as Array<Record<string, unknown>>) ?? [];
+
+        await this.prisma.$transaction(async (tx) => {
+          await tx.priceListItem.deleteMany({ where: { priceListId: list.id } });
+          if (items.length > 0) {
+            await tx.priceListItem.createMany({ data: items as any });
+          }
+        });
+      }
+    }
+  }
+
   private parseTabularText(
     text: string,
     delimiter = '\t',
@@ -532,9 +780,7 @@ export class ImportsService {
       .filter((line) => line.length > 0);
 
     if (lines.length < 2) {
-      throw new BadRequestException(
-        'El texto debe incluir encabezados y al menos una fila.',
-      );
+      throw new BadRequestException('El texto debe incluir encabezados y al menos una fila.');
     }
 
     const headers = lines[0].split(delimiter).map((h) => h.trim());
@@ -552,10 +798,7 @@ export class ImportsService {
     return { headers, rows };
   }
 
-  private normalizePurchaseRows(
-    headers: string[],
-    rows: Record<string, unknown>[],
-  ) {
+  private normalizePurchaseRows(headers: string[], rows: Record<string, unknown>[]) {
     const result = {
       rowsRead: rows.length,
       rowsImported: 0,
@@ -583,14 +826,10 @@ export class ImportsService {
     const quantityKey = this.findHeader(fieldMap, ['cantidad', 'cant', 'unidades']);
 
     if (!skuKey && !nameKey) {
-      throw new BadRequestException(
-        'No se pudo identificar una columna SKU/Codigo o Nombre.',
-      );
+      throw new BadRequestException('No se pudo identificar una columna SKU/Codigo o Nombre.');
     }
     if (!costKey) {
-      throw new BadRequestException(
-        'No se pudo identificar una columna de costo/precio.',
-      );
+      throw new BadRequestException('No se pudo identificar una columna de costo/precio.');
     }
 
     for (let i = 0; i < rows.length; i += 1) {
@@ -612,7 +851,7 @@ export class ImportsService {
         continue;
       }
       if (cost === null || cost <= 0) {
-        result.errors.push(`Fila ${rowNum}: costo invÃ¡lido (${sku || name}).`);
+        result.errors.push(`Fila ${rowNum}: costo invalido (${sku || name}).`);
         continue;
       }
 

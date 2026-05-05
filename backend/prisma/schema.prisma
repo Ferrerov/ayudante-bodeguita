@@ -64,6 +64,59 @@ model ReplenishmentItem {
   @@map("replenishment_items")
 }
 
+model ImportJob {
+  id            Int                      @id @default(autoincrement())
+  type          String
+  status        String
+  filename      String
+  checksum      String?
+  rowsRead      Int                      @default(0) @map("rows_read")
+  rowsImported  Int                      @default(0) @map("rows_imported")
+  warnings      Json?
+  errors        Json?
+  metadata      Json?
+  undoOfJobId   Int?                     @map("undo_of_job_id")
+  undoneAt      DateTime?                @map("undone_at")
+  startedAt     DateTime                 @default(now()) @map("started_at")
+  finishedAt    DateTime?                @map("finished_at")
+  createdAt     DateTime                 @default(now()) @map("created_at")
+  updatedAt     DateTime                 @updatedAt @map("updated_at")
+  snapshots     ImportSnapshot[]
+  movements     ReplenishmentMovement[]
+
+  @@index([type, createdAt])
+  @@index([status, createdAt])
+  @@map("import_jobs")
+}
+
+model ImportSnapshot {
+  id         Int       @id @default(autoincrement())
+  jobId      Int       @map("job_id")
+  job        ImportJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  domainType String    @map("domain_type")
+  scopeKey   String?   @map("scope_key")
+  data       Json
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  @@index([jobId])
+  @@index([domainType, scopeKey])
+  @@map("import_snapshots")
+}
+
+model ReplenishmentMovement {
+  id          Int       @id @default(autoincrement())
+  jobId       Int       @map("job_id")
+  job         ImportJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  sku         String
+  delta       Decimal   @db.Decimal(12, 2)
+  beforeQty   Decimal   @map("before_qty") @db.Decimal(12, 2)
+  afterQty    Decimal   @map("after_qty") @db.Decimal(12, 2)
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@index([jobId, sku])
+  @@map("replenishment_movements")
+}
+
 model PriceList {
   id        Int             @id @default(autoincrement())
   code      String          @unique
