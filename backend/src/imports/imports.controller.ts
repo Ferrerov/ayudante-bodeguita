@@ -47,9 +47,7 @@ export class ImportsController {
   }
 
   @Post('purchase-review/text')
-  async parsePurchaseFromText(
-    @Body('text') text: string,
-  ): Promise<any> {
+  parsePurchaseFromText(@Body('text') text: string): any {
     if (!text || !String(text).trim()) {
       throw new BadRequestException('No se recibiÃ³ texto para procesar.');
     }
@@ -59,7 +57,7 @@ export class ImportsController {
 
   @Post('purchase-review/file')
   @UseInterceptors(FileInterceptor('file'))
-  async parsePurchaseFromFile(@UploadedFile() file: Express.Multer.File): Promise<any> {
+  parsePurchaseFromFile(@UploadedFile() file: Express.Multer.File): any {
     if (!file) {
       throw new BadRequestException('No se recibiÃ³ ningÃºn archivo.');
     }
@@ -69,9 +67,7 @@ export class ImportsController {
     const isCsv = lowerName.endsWith('.csv');
 
     if (!isExcel && !isCsv) {
-      throw new BadRequestException(
-        'El archivo debe ser .xlsx, .xls o .csv.',
-      );
+      throw new BadRequestException('El archivo debe ser .xlsx, .xls o .csv.');
     }
 
     return this.importsService.parsePurchaseReviewFromFile(
@@ -82,7 +78,9 @@ export class ImportsController {
 
   @Post('products')
   @UseInterceptors(FileInterceptor('file'))
-  async importProducts(@UploadedFile() file: Express.Multer.File): Promise<any> {
+  async importProducts(
+    @UploadedFile() file: Express.Multer.File,
+  ): Promise<any> {
     if (!file) {
       throw new BadRequestException('No se recibió ningún archivo.');
     }
@@ -101,7 +99,9 @@ export class ImportsController {
 
   @Post('price-lists/bodeguita')
   @UseInterceptors(FileInterceptor('file'))
-  async importBodeguita(@UploadedFile() file: Express.Multer.File): Promise<any> {
+  async importBodeguita(
+    @UploadedFile() file: Express.Multer.File,
+  ): Promise<any> {
     if (!file) {
       throw new BadRequestException('No se recibió ningún archivo.');
     }
@@ -164,10 +164,7 @@ export class ImportsController {
       );
     }
 
-    return this.importsService.importSuppliers(
-      file.buffer,
-      file.originalname,
-    );
+    return this.importsService.importSuppliers(file.buffer, file.originalname);
   }
 
   @Post('price-lists/distribuidora-mayorista')

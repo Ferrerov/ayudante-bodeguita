@@ -48,7 +48,16 @@ export function findMissingColumns(
  */
 export function normalizeString(value: unknown): string {
   if (value === null || value === undefined) return '';
-  return String(value).trim();
+  if (typeof value === 'string') return value.trim();
+  if (
+    typeof value === 'number' ||
+    typeof value === 'boolean' ||
+    typeof value === 'bigint'
+  ) {
+    return `${value}`.trim();
+  }
+  if (value instanceof Date) return value.toISOString();
+  return JSON.stringify(value).trim();
 }
 
 /**
@@ -62,7 +71,7 @@ export function parseDecimal(value: unknown): number | null {
     return isNaN(value) ? null : value;
   }
 
-  const str = String(value).trim();
+  const str = normalizeString(value);
   if (str === '') return 0;
 
   // Detectar formato: si tiene punto y coma, el último separador es el decimal

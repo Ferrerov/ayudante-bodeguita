@@ -112,7 +112,10 @@ export class SuppliersService {
       'ciudad',
     ];
 
-    if (sortBy && sortable.includes(sortBy as keyof Prisma.SupplierOrderByWithRelationInput)) {
+    if (
+      sortBy &&
+      sortable.includes(sortBy as keyof Prisma.SupplierOrderByWithRelationInput)
+    ) {
       return { [sortBy]: sortOrder };
     }
 

@@ -1,7 +1,12 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma';
 import {
   parseXlsx,
+  ParsedSheet,
   findMissingColumns,
   normalizeString,
   parseDecimal,
@@ -27,6 +32,25 @@ interface PurchaseReviewRow {
   quantity: number;
 }
 
+type ImportJobSerialized = {
+  id: number;
+  type: string;
+  status: string;
+  filename: string;
+  checksum: string | null;
+  rowsRead: number;
+  rowsImported: number;
+  warnings: string[];
+  errors: string[];
+  metadata: Prisma.JsonValue | null;
+  undoOfJobId: number | null;
+  undoneAt: Date | null;
+  startedAt: Date;
+  finishedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
 const PRODUCT_REQUIRED_COLUMNS = [
   'Tipo',
   'SKU',
@@ -44,7 +68,12 @@ const PRODUCT_REQUIRED_COLUMNS = [
 
 const PRICE_LIST_REQUIRED_COLUMNS = ['Codigo', 'Nombre', 'Precio Final'];
 const REPLENISHMENT_REQUIRED_COLUMNS = ['Codigo', 'Nombre', 'Cantidad'];
-const SUPPLIER_REQUIRED_COLUMNS = ['Personeria', 'Razon Social', 'Tipo Documeto', 'Documento'];
+const SUPPLIER_REQUIRED_COLUMNS = [
+  'Personeria',
+  'Razon Social',
+  'Tipo Documeto',
+  'Documento',
+];
 const ALLOWED_TYPES = ['Producto', 'Combo', 'Servicio'];
 
 type JobType =
@@ -135,7 +164,9 @@ export class ImportsService {
     const sourceJob = await this.prisma.importJob.findUnique({ where: { id } });
     if (!sourceJob) throw new NotFoundException('Importacion no encontrada.');
     if (sourceJob.status !== 'SUCCESS') {
-      throw new BadRequestException('Solo se pueden deshacer importaciones exitosas.');
+      throw new BadRequestException(
+        'Solo se pueden deshacer importaciones exitosas.',
+      );
     }
     if (sourceJob.undoneAt) {
       throw new BadRequestException('Esta importacion ya fue deshecha.');
@@ -224,7 +255,10 @@ export class ImportsService {
     }
   }
 
-  async importProducts(buffer: Buffer, filename: string): Promise<ImportResult> {
+  async importProducts(
+    buffer: Buffer,
+    filename: string,
+  ): Promise<ImportResult> {
     const job = await this.startJob('PRODUCTS', filename, buffer);
     const result: ImportResult = {
       type: 'productos',
@@ -236,17 +270,22 @@ export class ImportsService {
       jobId: job.id,
     };
 
-    let parsed;
+    let parsed: ParsedSheet;
     try {
       parsed = parseXlsx(buffer);
-      const missing = findMissingColumns(parsed.headers, PRODUCT_REQUIRED_COLUMNS);
+      const missing = findMissingColumns(
+        parsed.headers,
+        PRODUCT_REQUIRED_COLUMNS,
+      );
       if (missing.length > 0) {
-        throw new BadRequestException(`Columnas obligatorias faltantes: ${missing.join(', ')}`);
+        throw new BadRequestException(
+          `Columnas obligatorias faltantes: ${missing.join(', ')}`,
+        );
       }
 
       result.rowsRead = parsed.rows.length;
       const skusSeen = new Set<string>();
-      const validProducts: Array<Record<string, unknown>> = [];
+      const validProducts: Prisma.ProductCreateManyInput[] = [];
 
       for (let i = 0; i < parsed.rows.length; i++) {
         const row = parsed.rows[i];
@@ -265,7 +304,9 @@ export class ImportsService {
           continue;
         }
         if (!ALLOWED_TYPES.includes(type)) {
-          result.errors.push(`Fila ${rowNum}: Tipo "${type}" no permitido (SKU: ${sku}).`);
+          result.errors.push(
+            `Fila ${rowNum}: Tipo "${type}" no permitido (SKU: ${sku}).`,
+          );
           continue;
         }
         if (skusSeen.has(sku)) {
@@ -284,14 +325,22 @@ export class ImportsService {
         const minimumStock = parseDecimal(row['Stock Minimo']);
 
         if (internalCost === null) {
-          result.errors.push(`Fila ${rowNum}: Costo Interno invalido (SKU: ${sku}).`);
+          result.errors.push(
+            `Fila ${rowNum}: Costo Interno invalido (SKU: ${sku}).`,
+          );
           continue;
         }
         if (finalPrice === null) {
-          result.errors.push(`Fila ${rowNum}: Precio Final invalido (SKU: ${sku}).`);
+          result.errors.push(
+            `Fila ${rowNum}: Precio Final invalido (SKU: ${sku}).`,
+          );
           continue;
         }
-        if (stock === null || reservedStock === null || availableStock === null) {
+        if (
+          stock === null ||
+          reservedStock === null ||
+          availableStock === null
+        ) {
           result.errors.push(`Fila ${rowNum}: Stock invalido (SKU: ${sku}).`);
           continue;
         }
@@ -303,9 +352,11 @@ export class ImportsService {
           parentSku: normalizeString(row['SKU Padre']) || null,
           name,
           attribute1: normalizeString(row['Atributo 1']) || null,
-          attribute1Variant: normalizeString(row['Variante De Atributo 1']) || null,
+          attribute1Variant:
+            normalizeString(row['Variante De Atributo 1']) || null,
           attribute2: normalizeString(row['Atributo 2']) || null,
-          attribute2Variant: normalizeString(row['Variante De Atributo 2']) || null,
+          attribute2Variant:
+            normalizeString(row['Variante De Atributo 2']) || null,
           barcode: normalizeString(row['Codigo Barras']) || null,
           oemCode: normalizeString(row['Codigo Oem']) || null,
           description: normalizeString(row['Descripcion']) || null,
@@ -343,12 +394,12 @@ export class ImportsService {
             jobId: job.id,
             domainType: 'PRODUCTS',
             scopeKey: null,
-            data: before as unknown as Prisma.InputJsonValue,
+            data: before,
           },
         });
         await tx.product.deleteMany();
         if (validProducts.length > 0) {
-          await tx.product.createMany({ data: validProducts as any });
+          await tx.product.createMany({ data: validProducts });
         }
       }, IMPORT_TRANSACTION_OPTIONS);
 
@@ -384,23 +435,32 @@ export class ImportsService {
     try {
       const productCount = await this.prisma.product.count();
       if (productCount === 0) {
-        throw new BadRequestException('No se puede importar una lista sin catalogo de productos.');
+        throw new BadRequestException(
+          'No se puede importar una lista sin catalogo de productos.',
+        );
       }
 
       const priceList = await this.ensurePriceList(listCode);
 
       const parsed = parseXlsx(buffer);
-      const missing = findMissingColumns(parsed.headers, PRICE_LIST_REQUIRED_COLUMNS);
+      const missing = findMissingColumns(
+        parsed.headers,
+        PRICE_LIST_REQUIRED_COLUMNS,
+      );
       if (missing.length > 0) {
-        throw new BadRequestException(`Columnas obligatorias faltantes: ${missing.join(', ')}`);
+        throw new BadRequestException(
+          `Columnas obligatorias faltantes: ${missing.join(', ')}`,
+        );
       }
 
       result.rowsRead = parsed.rows.length;
-      const existingProducts = await this.prisma.product.findMany({ select: { sku: true, name: true } });
+      const existingProducts = await this.prisma.product.findMany({
+        select: { sku: true, name: true },
+      });
       const productMap = new Map(existingProducts.map((p) => [p.sku, p.name]));
 
       const codesSeen = new Set<string>();
-      const validItems: Array<Record<string, unknown>> = [];
+      const validItems: Prisma.PriceListItemCreateManyInput[] = [];
 
       for (let i = 0; i < parsed.rows.length; i++) {
         const row = parsed.rows[i];
@@ -419,7 +479,9 @@ export class ImportsService {
           continue;
         }
         if (finalPrice === null) {
-          result.errors.push(`Fila ${rowNum}: Precio Final invalido (Codigo: ${code}).`);
+          result.errors.push(
+            `Fila ${rowNum}: Precio Final invalido (Codigo: ${code}).`,
+          );
           continue;
         }
         if (codesSeen.has(code)) {
@@ -430,7 +492,9 @@ export class ImportsService {
         codesSeen.add(code);
 
         if (!productMap.has(code)) {
-          result.warnings.push(`Fila ${rowNum}: Codigo "${code}" no existe en catalogo.`);
+          result.warnings.push(
+            `Fila ${rowNum}: Codigo "${code}" no existe en catalogo.`,
+          );
         } else if (productMap.get(code) !== name) {
           result.warnings.push(
             `Fila ${rowNum}: Nombre difiere para codigo "${code}". Producto: "${productMap.get(code)}", Lista: "${name}".`,
@@ -455,19 +519,23 @@ export class ImportsService {
         return result;
       }
 
-      const before = await this.prisma.priceListItem.findMany({ where: { priceListId: priceList.id } });
+      const before = await this.prisma.priceListItem.findMany({
+        where: { priceListId: priceList.id },
+      });
       await this.prisma.$transaction(async (tx) => {
         await tx.importSnapshot.create({
           data: {
             jobId: job.id,
             domainType: 'PRICE_LIST',
             scopeKey: listCode,
-            data: before as unknown as Prisma.InputJsonValue,
+            data: before,
           },
         });
-        await tx.priceListItem.deleteMany({ where: { priceListId: priceList.id } });
+        await tx.priceListItem.deleteMany({
+          where: { priceListId: priceList.id },
+        });
         if (validItems.length > 0) {
-          await tx.priceListItem.createMany({ data: validItems as any });
+          await tx.priceListItem.createMany({ data: validItems });
         }
       }, IMPORT_TRANSACTION_OPTIONS);
 
@@ -493,7 +561,21 @@ export class ImportsService {
     });
   }
 
-  async importReplenishment(buffer: Buffer, filename: string): Promise<ImportResult> {
+  async importReplenishment(
+    buffer: Buffer,
+    filename: string,
+  ): Promise<ImportResult> {
+    const checksum = createHash('sha256').update(buffer).digest('hex');
+    const duplicatedJob = await this.findSuccessfulJobByChecksum(
+      'REPLENISHMENT',
+      checksum,
+    );
+    if (duplicatedJob) {
+      throw new BadRequestException(
+        `Este archivo ya fue importado en la operacion #${duplicatedJob.id}. Evita duplicados usando un archivo nuevo o deshace la importacion anterior.`,
+      );
+    }
+
     const job = await this.startJob('REPLENISHMENT', filename, buffer);
     const result: ImportResult = {
       type: 'reposicion',
@@ -508,17 +590,34 @@ export class ImportsService {
     try {
       const productCount = await this.prisma.product.count();
       if (productCount === 0) {
-        throw new BadRequestException('No se puede importar reposicion sin catalogo de productos cargado.');
+        throw new BadRequestException(
+          'No se puede importar reposicion sin catalogo de productos cargado.',
+        );
       }
 
       const parsed = parseXlsx(buffer);
-      const missing = findMissingColumns(parsed.headers, REPLENISHMENT_REQUIRED_COLUMNS);
+      const missing = findMissingColumns(
+        parsed.headers,
+        REPLENISHMENT_REQUIRED_COLUMNS,
+      );
       if (missing.length > 0) {
-        throw new BadRequestException(`Columnas obligatorias faltantes: ${missing.join(', ')}`);
+        throw new BadRequestException(
+          `Columnas obligatorias faltantes: ${missing.join(', ')}`,
+        );
       }
 
       result.rowsRead = parsed.rows.length;
-      const grouped = new Map<string, { sku: string; name: string; quantity: number }>();
+      const grouped = new Map<
+        string,
+        { sku: string; name: string; quantity: number }
+      >();
+      const candidateRows: Array<{
+        sku: string;
+        name: string;
+        quantity: number;
+        fingerprint: string;
+      }> = [];
+      const fingerprintsInFile = new Set<string>();
 
       for (let i = 0; i < parsed.rows.length; i += 1) {
         const row = parsed.rows[i];
@@ -536,22 +635,44 @@ export class ImportsService {
           continue;
         }
         if (quantity === null) {
-          result.errors.push(`Fila ${rowNum}: Cantidad invalida (Codigo: ${sku}).`);
+          result.errors.push(
+            `Fila ${rowNum}: Cantidad invalida (Codigo: ${sku}).`,
+          );
           continue;
         }
 
         const replenishmentQuantity = Math.abs(quantity);
         if (replenishmentQuantity === 0) {
-          result.warnings.push(`Fila ${rowNum}: Cantidad cero omitida (Codigo: ${sku}).`);
+          result.warnings.push(
+            `Fila ${rowNum}: Cantidad cero omitida (Codigo: ${sku}).`,
+          );
           continue;
         }
 
-        const current = grouped.get(sku);
-        if (current) {
-          current.quantity += replenishmentQuantity;
-        } else {
-          grouped.set(sku, { sku, name, quantity: replenishmentQuantity });
+        const fingerprint = this.buildReplenishmentRowFingerprint({
+          fecha: row['Fecha'],
+          deposito: row['Deposito'],
+          detalle: row['Detalle'],
+          codigo: sku,
+          cantidad: quantity,
+          observaciones: row['Observaciones'],
+          usuarioAlta: row['Usuario Alta'],
+        });
+
+        if (fingerprintsInFile.has(fingerprint)) {
+          result.warnings.push(
+            `Fila ${rowNum}: registro duplicado dentro del archivo (Codigo: ${sku}).`,
+          );
+          continue;
         }
+        fingerprintsInFile.add(fingerprint);
+
+        candidateRows.push({
+          sku,
+          name,
+          quantity: replenishmentQuantity,
+          fingerprint,
+        });
       }
 
       if (result.errors.length > 0) {
@@ -559,15 +680,47 @@ export class ImportsService {
         return result;
       }
 
+      const alreadyImported =
+        await this.prisma.replenishmentImportedRow.findMany({
+          where: { fingerprint: { in: Array.from(fingerprintsInFile) } },
+          select: { fingerprint: true },
+        });
+      const alreadyImportedSet = new Set(
+        alreadyImported.map((row) => row.fingerprint),
+      );
+
+      for (const row of candidateRows) {
+        if (alreadyImportedSet.has(row.fingerprint)) {
+          result.warnings.push(
+            `Codigo "${row.sku}": registro ya importado previamente, se omite.`,
+          );
+          continue;
+        }
+        const current = grouped.get(row.sku);
+        if (current) {
+          current.quantity += row.quantity;
+        } else {
+          grouped.set(row.sku, {
+            sku: row.sku,
+            name: row.name,
+            quantity: row.quantity,
+          });
+        }
+      }
+
       const products = await this.prisma.product.findMany({
         where: { sku: { in: Array.from(grouped.keys()) } },
         select: { sku: true, name: true },
       });
-      const productMap = new Map(products.map((product) => [product.sku, product]));
+      const productMap = new Map(
+        products.map((product) => [product.sku, product]),
+      );
       const items = Array.from(grouped.values()).filter((item) => {
         const product = productMap.get(item.sku);
         if (!product) {
-          result.warnings.push(`Codigo "${item.sku}" no existe en catalogo y fue omitido.`);
+          result.warnings.push(
+            `Codigo "${item.sku}" no existe en catalogo y fue omitido.`,
+          );
           return false;
         }
         if (product.name !== item.name) {
@@ -579,9 +732,17 @@ export class ImportsService {
         return true;
       });
 
+      const validSkus = new Set(items.map((item) => item.sku));
+      const importedRowsToPersist = candidateRows.filter(
+        (row) =>
+          !alreadyImportedSet.has(row.fingerprint) && validSkus.has(row.sku),
+      );
+
       await this.prisma.$transaction(async (tx) => {
         for (const item of items) {
-          const existing = await tx.replenishmentItem.findUnique({ where: { sku: item.sku } });
+          const existing = await tx.replenishmentItem.findUnique({
+            where: { sku: item.sku },
+          });
           const beforeQty = Number(existing?.quantity ?? 0);
           const afterQty = beforeQty + item.quantity;
 
@@ -617,9 +778,20 @@ export class ImportsService {
             },
           });
         }
+
+        if (importedRowsToPersist.length > 0) {
+          await tx.replenishmentImportedRow.createMany({
+            data: importedRowsToPersist.map((row) => ({
+              jobId: job.id,
+              fingerprint: row.fingerprint,
+              sku: row.sku,
+            })),
+            skipDuplicates: true,
+          });
+        }
       }, IMPORT_TRANSACTION_OPTIONS);
 
-      result.rowsImported = items.length;
+      result.rowsImported = importedRowsToPersist.length;
       await this.finishJob(job.id, 'SUCCESS', result);
       return result;
     } catch (error) {
@@ -628,7 +800,10 @@ export class ImportsService {
     }
   }
 
-  async importSuppliers(buffer: Buffer, filename: string): Promise<ImportResult> {
+  async importSuppliers(
+    buffer: Buffer,
+    filename: string,
+  ): Promise<ImportResult> {
     const job = await this.startJob('SUPPLIERS', filename, buffer);
     const result: ImportResult = {
       type: 'proveedores',
@@ -642,13 +817,18 @@ export class ImportsService {
 
     try {
       const parsed = parseXlsx(buffer);
-      const missing = findMissingColumns(parsed.headers, SUPPLIER_REQUIRED_COLUMNS);
+      const missing = findMissingColumns(
+        parsed.headers,
+        SUPPLIER_REQUIRED_COLUMNS,
+      );
       if (missing.length > 0) {
-        throw new BadRequestException(`Columnas obligatorias faltantes: ${missing.join(', ')}`);
+        throw new BadRequestException(
+          `Columnas obligatorias faltantes: ${missing.join(', ')}`,
+        );
       }
 
       result.rowsRead = parsed.rows.length;
-      const validSuppliers: Array<Record<string, unknown>> = [];
+      const validSuppliers: Prisma.SupplierCreateManyInput[] = [];
       const seen = new Set<string>();
 
       for (let i = 0; i < parsed.rows.length; i += 1) {
@@ -667,7 +847,9 @@ export class ImportsService {
 
         const dedupeKey = `${code || '-'}|${documento || '-'}|${razonSocial.toLowerCase()}`;
         if (seen.has(dedupeKey)) {
-          result.errors.push(`Fila ${rowNum}: proveedor duplicado (${razonSocial}).`);
+          result.errors.push(
+            `Fila ${rowNum}: proveedor duplicado (${razonSocial}).`,
+          );
           continue;
         }
         seen.add(dedupeKey);
@@ -679,7 +861,8 @@ export class ImportsService {
           code: code || null,
           tipoDocumento: normalizeString(row['Tipo Documeto']) || null,
           documento: documento || null,
-          categoriaImpositiva: normalizeString(row['Categoria Impositiva']) || null,
+          categoriaImpositiva:
+            normalizeString(row['Categoria Impositiva']) || null,
           telefono: normalizeString(row['Telefono']) || null,
           celular: normalizeString(row['Celular']) || null,
           email: normalizeString(row['Email']) || null,
@@ -707,12 +890,12 @@ export class ImportsService {
             jobId: job.id,
             domainType: 'SUPPLIERS',
             scopeKey: null,
-            data: before as unknown as Prisma.InputJsonValue,
+            data: before,
           },
         });
         await tx.supplier.deleteMany();
         if (validSuppliers.length > 0) {
-          await tx.supplier.createMany({ data: validSuppliers as any });
+          await tx.supplier.createMany({ data: validSuppliers });
         }
       }, IMPORT_TRANSACTION_OPTIONS);
 
@@ -725,12 +908,12 @@ export class ImportsService {
     }
   }
 
-  async parsePurchaseReviewFromText(text: string) {
+  parsePurchaseReviewFromText(text: string) {
     const parsed = this.parseTabularText(text);
     return this.normalizePurchaseRows(parsed.headers, parsed.rows);
   }
 
-  async parsePurchaseReviewFromFile(buffer: Buffer, filename: string) {
+  parsePurchaseReviewFromFile(buffer: Buffer, filename: string) {
     const lower = filename.toLowerCase();
     if (lower.endsWith('.csv')) {
       const text = buffer.toString('utf-8');
@@ -742,18 +925,71 @@ export class ImportsService {
     return this.normalizePurchaseRows(parsed.headers, parsed.rows);
   }
 
+  private async findSuccessfulJobByChecksum(type: JobType, checksum: string) {
+    return this.prisma.importJob.findFirst({
+      where: {
+        type,
+        status: 'SUCCESS',
+        checksum,
+        undoneAt: null,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  private buildReplenishmentRowFingerprint(row: {
+    fecha: unknown;
+    deposito: unknown;
+    detalle: unknown;
+    codigo: unknown;
+    cantidad: unknown;
+    observaciones: unknown;
+    usuarioAlta: unknown;
+  }) {
+    const parts = [
+      this.normalizeFingerprintPart(row.fecha),
+      this.normalizeFingerprintPart(row.deposito),
+      this.normalizeFingerprintPart(row.detalle),
+      this.normalizeFingerprintPart(row.codigo),
+      this.normalizeFingerprintPart(row.cantidad),
+      this.normalizeFingerprintPart(row.observaciones),
+      this.normalizeFingerprintPart(row.usuarioAlta),
+    ];
+    return createHash('sha256').update(parts.join('|')).digest('hex');
+  }
+
+  private normalizeFingerprintPart(value: unknown): string {
+    if (value === null || value === undefined) return '';
+    if (value instanceof Date) return value.toISOString();
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) return '';
+      return value.toFixed(10);
+    }
+    if (typeof value === 'string') return value.trim().toLowerCase();
+    if (typeof value === 'boolean' || typeof value === 'bigint') {
+      return `${value}`.trim().toLowerCase();
+    }
+    return JSON.stringify(value).trim().toLowerCase();
+  }
+
   private async startJob(type: JobType, filename: string, buffer?: Buffer) {
     return this.prisma.importJob.create({
       data: {
         type,
         status: 'RUNNING',
         filename,
-        checksum: buffer ? createHash('sha256').update(buffer).digest('hex') : null,
+        checksum: buffer
+          ? createHash('sha256').update(buffer).digest('hex')
+          : null,
       },
     });
   }
 
-  private async finishJob(jobId: number, status: 'SUCCESS' | 'FAILED', result: ImportResult) {
+  private async finishJob(
+    jobId: number,
+    status: 'SUCCESS' | 'FAILED',
+    result: ImportResult,
+  ) {
     await this.prisma.importJob.update({
       where: { id: jobId },
       data: {
@@ -777,7 +1013,24 @@ export class ImportsService {
     return 'Error inesperado durante la importacion.';
   }
 
-  private serializeJob(job: any) {
+  private serializeJob(job: {
+    id: number;
+    type: string;
+    status: string;
+    filename: string;
+    checksum: string | null;
+    rowsRead: number;
+    rowsImported: number;
+    warnings: Prisma.JsonValue | null;
+    errors: Prisma.JsonValue | null;
+    metadata: Prisma.JsonValue | null;
+    undoOfJobId: number | null;
+    undoneAt: Date | null;
+    startedAt: Date;
+    finishedAt: Date | null;
+    createdAt: Date;
+    updatedAt: Date;
+  }): ImportJobSerialized {
     return {
       id: job.id,
       type: job.type,
@@ -786,8 +1039,8 @@ export class ImportsService {
       checksum: job.checksum,
       rowsRead: job.rowsRead,
       rowsImported: job.rowsImported,
-      warnings: Array.isArray(job.warnings) ? job.warnings : [],
-      errors: Array.isArray(job.errors) ? job.errors : [],
+      warnings: this.parseJsonStringArray(job.warnings),
+      errors: this.parseJsonStringArray(job.errors),
       metadata: job.metadata ?? null,
       undoOfJobId: job.undoOfJobId,
       undoneAt: job.undoneAt,
@@ -798,8 +1051,32 @@ export class ImportsService {
     };
   }
 
+  private parseJsonStringArray(value: Prisma.JsonValue | null): string[] {
+    if (!Array.isArray(value)) return [];
+    const rows: string[] = [];
+    for (const item of value) {
+      if (typeof item === 'string') rows.push(item);
+    }
+    return rows;
+  }
+
+  private parseJsonRecordArray(
+    value: Prisma.JsonValue,
+  ): Array<Record<string, unknown>> {
+    if (!Array.isArray(value)) return [];
+    const rows: Array<Record<string, unknown>> = [];
+    for (const item of value) {
+      if (item && typeof item === 'object' && !Array.isArray(item)) {
+        rows.push(item);
+      }
+    }
+    return rows;
+  }
+
   private async applyRestoreForJob(sourceJobId: number) {
-    const sourceJob = await this.prisma.importJob.findUnique({ where: { id: sourceJobId } });
+    const sourceJob = await this.prisma.importJob.findUnique({
+      where: { id: sourceJobId },
+    });
     if (!sourceJob) throw new NotFoundException('Importacion no encontrada.');
 
     if (sourceJob.type === 'REPLENISHMENT') {
@@ -808,8 +1085,14 @@ export class ImportsService {
       });
 
       await this.prisma.$transaction(async (tx) => {
+        await tx.replenishmentImportedRow.deleteMany({
+          where: { jobId: sourceJobId },
+        });
+
         for (const movement of movements) {
-          const item = await tx.replenishmentItem.findUnique({ where: { sku: movement.sku } });
+          const item = await tx.replenishmentItem.findUnique({
+            where: { sku: movement.sku },
+          });
           const currentQty = Number(item?.quantity ?? 0);
           const nextQty = Math.max(0, currentQty - Number(movement.delta));
 
@@ -843,41 +1126,55 @@ export class ImportsService {
       return;
     }
 
-    const snapshots = await this.prisma.importSnapshot.findMany({ where: { jobId: sourceJobId } });
+    const snapshots = await this.prisma.importSnapshot.findMany({
+      where: { jobId: sourceJobId },
+    });
     if (snapshots.length === 0) {
-      throw new BadRequestException('La importacion no tiene snapshot para restaurar.');
+      throw new BadRequestException(
+        'La importacion no tiene snapshot para restaurar.',
+      );
     }
 
     for (const snapshot of snapshots) {
       if (snapshot.domainType === 'PRODUCTS') {
-        const products = (snapshot.data as Array<Record<string, unknown>>) ?? [];
+        const products = this.parseJsonRecordArray(
+          snapshot.data,
+        ) as Prisma.ProductCreateManyInput[];
         await this.prisma.$transaction(async (tx) => {
           await tx.product.deleteMany();
           if (products.length > 0) {
-            await tx.product.createMany({ data: products as any });
+            await tx.product.createMany({ data: products });
           }
         }, IMPORT_TRANSACTION_OPTIONS);
       }
 
       if (snapshot.domainType === 'PRICE_LIST') {
-        const list = await this.prisma.priceList.findUnique({ where: { code: snapshot.scopeKey ?? '' } });
+        const list = await this.prisma.priceList.findUnique({
+          where: { code: snapshot.scopeKey ?? '' },
+        });
         if (!list) continue;
-        const items = (snapshot.data as Array<Record<string, unknown>>) ?? [];
+        const items = this.parseJsonRecordArray(
+          snapshot.data,
+        ) as Prisma.PriceListItemCreateManyInput[];
 
         await this.prisma.$transaction(async (tx) => {
-          await tx.priceListItem.deleteMany({ where: { priceListId: list.id } });
+          await tx.priceListItem.deleteMany({
+            where: { priceListId: list.id },
+          });
           if (items.length > 0) {
-            await tx.priceListItem.createMany({ data: items as any });
+            await tx.priceListItem.createMany({ data: items });
           }
         }, IMPORT_TRANSACTION_OPTIONS);
       }
 
       if (snapshot.domainType === 'SUPPLIERS') {
-        const suppliers = (snapshot.data as Array<Record<string, unknown>>) ?? [];
+        const suppliers = this.parseJsonRecordArray(
+          snapshot.data,
+        ) as Prisma.SupplierCreateManyInput[];
         await this.prisma.$transaction(async (tx) => {
           await tx.supplier.deleteMany();
           if (suppliers.length > 0) {
-            await tx.supplier.createMany({ data: suppliers as any });
+            await tx.supplier.createMany({ data: suppliers });
           }
         }, IMPORT_TRANSACTION_OPTIONS);
       }
@@ -894,7 +1191,9 @@ export class ImportsService {
       .filter((line) => line.length > 0);
 
     if (lines.length < 2) {
-      throw new BadRequestException('El texto debe incluir encabezados y al menos una fila.');
+      throw new BadRequestException(
+        'El texto debe incluir encabezados y al menos una fila.',
+      );
     }
 
     const headers = lines[0].split(delimiter).map((h) => h.trim());
@@ -912,7 +1211,10 @@ export class ImportsService {
     return { headers, rows };
   }
 
-  private normalizePurchaseRows(headers: string[], rows: Record<string, unknown>[]) {
+  private normalizePurchaseRows(
+    headers: string[],
+    rows: Record<string, unknown>[],
+  ) {
     const result = {
       rowsRead: rows.length,
       rowsImported: 0,
@@ -926,8 +1228,17 @@ export class ImportsService {
       fieldMap.set(this.normalizeHeader(header), header);
     });
 
-    const skuKey = this.findHeader(fieldMap, ['sku', 'codigo', 'codigoproducto', 'codigoarticulo']);
-    const nameKey = this.findHeader(fieldMap, ['nombre', 'descripcion', 'producto']);
+    const skuKey = this.findHeader(fieldMap, [
+      'sku',
+      'codigo',
+      'codigoproducto',
+      'codigoarticulo',
+    ]);
+    const nameKey = this.findHeader(fieldMap, [
+      'nombre',
+      'descripcion',
+      'producto',
+    ]);
     const costKey = this.findHeader(fieldMap, [
       'costo',
       'costointerno',
@@ -937,13 +1248,21 @@ export class ImportsService {
       'preciounit',
       'preciofinal',
     ]);
-    const quantityKey = this.findHeader(fieldMap, ['cantidad', 'cant', 'unidades']);
+    const quantityKey = this.findHeader(fieldMap, [
+      'cantidad',
+      'cant',
+      'unidades',
+    ]);
 
     if (!skuKey && !nameKey) {
-      throw new BadRequestException('No se pudo identificar una columna SKU/Codigo o Nombre.');
+      throw new BadRequestException(
+        'No se pudo identificar una columna SKU/Codigo o Nombre.',
+      );
     }
     if (!costKey) {
-      throw new BadRequestException('No se pudo identificar una columna de costo/precio.');
+      throw new BadRequestException(
+        'No se pudo identificar una columna de costo/precio.',
+      );
     }
 
     for (let i = 0; i < rows.length; i += 1) {

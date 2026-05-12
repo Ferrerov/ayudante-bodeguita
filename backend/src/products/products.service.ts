@@ -90,7 +90,12 @@ export class ProductsService {
     { id: 1, name: 'CERVEZAS', min: 100, max: 199 },
     { id: 2, name: 'APERITIVOS', min: 200, max: 299 },
     { id: 3, name: 'ESPUMANTES Y CHAMPAGNE', min: 300, max: 399 },
-    { id: 4, name: 'GASEOSAS, ENERGIZANTES, AGUAS Y JUGOS', min: 400, max: 499 },
+    {
+      id: 4,
+      name: 'GASEOSAS, ENERGIZANTES, AGUAS Y JUGOS',
+      min: 400,
+      max: 499,
+    },
     { id: 5, name: 'WHISKY', min: 500, max: 599 },
     { id: 6, name: 'GIN', min: 600, max: 699 },
     { id: 7, name: 'VODKA', min: 700, max: 799 },
@@ -113,8 +118,10 @@ export class ProductsService {
     const normalized = this.normalizeText(category);
     if (!normalized) return null;
 
-    if (normalized.includes('CERVEZA')) return this.skuRangeRules.find((r) => r.id === 1) ?? null;
-    if (normalized.includes('APERITIVO')) return this.skuRangeRules.find((r) => r.id === 2) ?? null;
+    if (normalized.includes('CERVEZA'))
+      return this.skuRangeRules.find((r) => r.id === 1) ?? null;
+    if (normalized.includes('APERITIVO'))
+      return this.skuRangeRules.find((r) => r.id === 2) ?? null;
     if (normalized.includes('ESPUMANTE') || normalized.includes('CHAMPAGNE')) {
       return this.skuRangeRules.find((r) => r.id === 3) ?? null;
     }
@@ -126,9 +133,12 @@ export class ProductsService {
     ) {
       return this.skuRangeRules.find((r) => r.id === 4) ?? null;
     }
-    if (normalized.includes('WHISKY')) return this.skuRangeRules.find((r) => r.id === 5) ?? null;
-    if (normalized.includes('GIN')) return this.skuRangeRules.find((r) => r.id === 6) ?? null;
-    if (normalized.includes('VODKA')) return this.skuRangeRules.find((r) => r.id === 7) ?? null;
+    if (normalized.includes('WHISKY'))
+      return this.skuRangeRules.find((r) => r.id === 5) ?? null;
+    if (normalized.includes('GIN'))
+      return this.skuRangeRules.find((r) => r.id === 6) ?? null;
+    if (normalized.includes('VODKA'))
+      return this.skuRangeRules.find((r) => r.id === 7) ?? null;
     if (
       normalized.includes('RON') ||
       normalized.includes('TEQUILA') ||
@@ -139,7 +149,8 @@ export class ProductsService {
     if (normalized.includes('PROMO') || normalized.includes('COMBO')) {
       return this.skuRangeRules.find((r) => r.id === 9) ?? null;
     }
-    if (normalized.includes('VINO')) return this.skuRangeRules.find((r) => r.id === 10) ?? null;
+    if (normalized.includes('VINO'))
+      return this.skuRangeRules.find((r) => r.id === 10) ?? null;
     if (
       normalized.includes('REGALERIA') ||
       normalized.includes('MERCHANDISING') ||
@@ -238,25 +249,34 @@ export class ProductsService {
     // Get price list items for these products
     const skus = products.map((p) => p.sku);
 
-    const [bodeguitaItems, distribuidoraItems] = await Promise.all([
+    const [bodeguitaItems, distribuidoraItems]: [
+      Array<{ sku: string; finalPrice: Prisma.Decimal }>,
+      Array<{ sku: string; finalPrice: Prisma.Decimal }>,
+    ] = await Promise.all([
       bodeguita
         ? this.prisma.priceListItem.findMany({
             where: { priceListId: bodeguita.id, sku: { in: skus } },
+            select: { sku: true, finalPrice: true },
           })
         : [],
       distribuidora
         ? this.prisma.priceListItem.findMany({
             where: { priceListId: distribuidora.id, sku: { in: skus } },
+            select: { sku: true, finalPrice: true },
           })
         : [],
     ]);
 
     // Build lookup maps
     const bodeguitaMap = new Map<string, number>(
-      bodeguitaItems.map((item) => [item.sku, Number(item.finalPrice)] as [string, number]),
+      bodeguitaItems.map(
+        (item) => [item.sku, Number(item.finalPrice)] as [string, number],
+      ),
     );
     const distribuidoraMap = new Map<string, number>(
-      distribuidoraItems.map((item) => [item.sku, Number(item.finalPrice)] as [string, number]),
+      distribuidoraItems.map(
+        (item) => [item.sku, Number(item.finalPrice)] as [string, number],
+      ),
     );
 
     // Build unified response
@@ -294,7 +314,14 @@ export class ProductsService {
    * Returns distinct values for filter dropdowns.
    */
   async getFilterOptions() {
-    const [categories, subcategories, types, statuses, rawProductSuppliers, supplierRows] = await Promise.all([
+    const [
+      categories,
+      subcategories,
+      types,
+      statuses,
+      rawProductSuppliers,
+      supplierRows,
+    ] = await Promise.all([
       this.prisma.product.findMany({
         distinct: ['category'],
         select: { category: true },
@@ -347,9 +374,9 @@ export class ProductsService {
       }
     }
 
-    const unmatchedProductSuppliers = Array.from(normalizedProductSupplierMap.values()).sort((a, b) =>
-      a.localeCompare(b, 'es-AR', { sensitivity: 'base' }),
-    );
+    const unmatchedProductSuppliers = Array.from(
+      normalizedProductSupplierMap.values(),
+    ).sort((a, b) => a.localeCompare(b, 'es-AR', { sensitivity: 'base' }));
 
     return {
       categories: categories.map((c) => c.category).filter(Boolean),

@@ -83,10 +83,24 @@ model ImportJob {
   updatedAt     DateTime                 @updatedAt @map("updated_at")
   snapshots     ImportSnapshot[]
   movements     ReplenishmentMovement[]
+  importedRows  ReplenishmentImportedRow[]
 
   @@index([type, createdAt])
   @@index([status, createdAt])
   @@map("import_jobs")
+}
+
+model ReplenishmentImportedRow {
+  id         Int       @id @default(autoincrement())
+  jobId       Int      @map("job_id")
+  job         ImportJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  fingerprint String   @unique
+  sku         String
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([sku])
+  @@index([jobId])
+  @@map("replenishment_imported_rows")
 }
 
 model ImportSnapshot {
