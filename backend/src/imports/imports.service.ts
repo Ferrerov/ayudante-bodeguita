@@ -565,6 +565,8 @@ export class ImportsService {
     buffer: Buffer,
     filename: string,
   ): Promise<ImportResult> {
+    await this.ensureReplenishmentFingerprintBaseline();
+
     const checksum = createHash('sha256').update(buffer).digest('hex');
     const duplicatedJob = await this.findSuccessfulJobByChecksum(
       'REPLENISHMENT',
@@ -797,6 +799,28 @@ export class ImportsService {
     } catch (error) {
       await this.failJob(job.id, result, error);
       throw error;
+    }
+  }
+
+  private async ensureReplenishmentFingerprintBaseline() {
+    const [activeJobs, fingerprintRows, pendingItems] = await Promise.all([
+      this.prisma.importJob.count({
+        where: {
+          type: 'REPLENISHMENT',
+          status: 'SUCCESS',
+          undoneAt: null,
+        },
+      }),
+      this.prisma.replenishmentImportedRow.count(),
+      this.prisma.replenishmentItem.count({
+        where: { quantity: { gt: 0 } },
+      }),
+    ]);
+
+    if (activeJobs > 0 && fingerprintRows === 0 && pendingItems > 0) {
+      throw new BadRequestException(
+        'No se puede deduplicar con seguridad porque hay reposicion previa sin huellas historicas. Deshace/importaciones previas o reinicia la reposicion y vuelve a importar desde el primer archivo del periodo.',
+      );
     }
   }
 
