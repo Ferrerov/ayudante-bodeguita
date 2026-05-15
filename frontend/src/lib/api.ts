@@ -213,6 +213,53 @@ export interface SupplierFilters {
   provincias: string[];
 }
 
+export interface Customer {
+  id: number;
+  personeria: string | null;
+  razonSocial: string;
+  nombreFantasia: string | null;
+  code: string | null;
+  tipoDocumento: string | null;
+  documento: string | null;
+  categoriaImpositiva: string | null;
+  telefono: string | null;
+  celular: string | null;
+  email: string | null;
+  web: string | null;
+  observaciones: string | null;
+  provincia: string | null;
+  ciudad: string | null;
+  domicilio: string | null;
+  pisoDepto: string | null;
+  codigoPostal: string | null;
+  emailsEnvioFc: string | null;
+  listaPrecio: string | null;
+  limiteDescubierto: number;
+  descuentoFijo: number;
+  vendedorAsignado: string | null;
+  plazo: string | null;
+  tags: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CustomersResponse {
+  data: Customer[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+export interface CustomerFilters {
+  personerias: string[];
+  categoriasImpositivas: string[];
+  provincias: string[];
+  vendedoresAsignados: string[];
+  listasPrecio: string[];
+  withoutListaPrecioFilterValue: string;
+}
+
 export async function importProducts(file: File): Promise<ImportResult> {
   const formData = new FormData();
   formData.append('file', file);
@@ -279,6 +326,23 @@ export async function importSuppliers(file: File): Promise<ImportResult> {
   if (!res.ok) {
     const error = await res.json();
     throw new Error(error.message || 'Error al importar proveedores');
+  }
+
+  return res.json();
+}
+
+export async function importCustomers(file: File): Promise<ImportResult> {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const res = await fetch(`${API_URL}/imports/customers`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!res.ok) {
+    const error = await res.json();
+    throw new Error(error.message || 'Error al importar clientes');
   }
 
   return res.json();
@@ -522,6 +586,40 @@ export async function fetchSupplierFilters(): Promise<SupplierFilters> {
   const res = await fetch(`${API_URL}/suppliers/filters`);
   if (!res.ok) {
     throw new Error('Error al cargar filtros de proveedores');
+  }
+  return res.json();
+}
+
+export async function fetchCustomers(params: {
+  search?: string;
+  personeria?: string;
+  categoriaImpositiva?: string;
+  provincia?: string;
+  vendedorAsignado?: string;
+  listaPrecio?: string;
+  sortBy?: string;
+  sortOrder?: string;
+  page?: number;
+  limit?: number;
+}): Promise<CustomersResponse> {
+  const searchParams = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== '') {
+      searchParams.set(key, String(value));
+    }
+  });
+
+  const res = await fetch(`${API_URL}/customers?${searchParams.toString()}`);
+  if (!res.ok) {
+    throw new Error('Error al cargar clientes');
+  }
+  return res.json();
+}
+
+export async function fetchCustomerFilters(): Promise<CustomerFilters> {
+  const res = await fetch(`${API_URL}/customers/filters`);
+  if (!res.ok) {
+    throw new Error('Error al cargar filtros de clientes');
   }
   return res.json();
 }

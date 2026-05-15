@@ -74,6 +74,12 @@ const SUPPLIER_REQUIRED_COLUMNS = [
   'Tipo Documeto',
   'Documento',
 ];
+const CUSTOMER_REQUIRED_COLUMNS = [
+  'Personeria',
+  'Razon Social',
+  'Tipo Documeto',
+  'Documento',
+];
 const ALLOWED_TYPES = ['Producto', 'Combo', 'Servicio'];
 
 type JobType =
@@ -82,6 +88,7 @@ type JobType =
   | 'PRICE_LIST_DISTRIBUIDORA_MAYORISTA'
   | 'REPLENISHMENT'
   | 'SUPPLIERS'
+  | 'CUSTOMERS'
   | 'UNDO'
   | 'RESTORE';
 
@@ -932,6 +939,132 @@ export class ImportsService {
     }
   }
 
+  async importCustomers(
+    buffer: Buffer,
+    filename: string,
+  ): Promise<ImportResult> {
+    const job = await this.startJob('CUSTOMERS', filename, buffer);
+    const result: ImportResult = {
+      type: 'clientes',
+      filename,
+      rowsRead: 0,
+      rowsImported: 0,
+      warnings: [],
+      errors: [],
+      jobId: job.id,
+    };
+
+    try {
+      const parsed = parseXlsx(buffer);
+      const missing = findMissingColumns(
+        parsed.headers,
+        CUSTOMER_REQUIRED_COLUMNS,
+      );
+      if (missing.length > 0) {
+        throw new BadRequestException(
+          `Columnas obligatorias faltantes: ${missing.join(', ')}`,
+        );
+      }
+
+      result.rowsRead = parsed.rows.length;
+      const validCustomers: Prisma.CustomerCreateManyInput[] = [];
+      const seen = new Set<string>();
+
+      for (let i = 0; i < parsed.rows.length; i += 1) {
+        const row = parsed.rows[i];
+        const rowNum = i + 2;
+
+        const razonSocial = normalizeString(row['Razon Social']);
+        const personeria = normalizeString(row['Personeria']);
+        const documento = normalizeString(row['Documento']);
+        const code = normalizeString(row['Codigo']);
+
+        if (!razonSocial) {
+          result.errors.push(`Fila ${rowNum}: Razon Social vacia.`);
+          continue;
+        }
+
+        const dedupeKey = `${code || '-'}|${documento || '-'}|${razonSocial.toLowerCase()}`;
+        if (seen.has(dedupeKey)) {
+          result.errors.push(`Fila ${rowNum}: cliente duplicado (${razonSocial}).`);
+          continue;
+        }
+        seen.add(dedupeKey);
+
+        const limiteDescubierto = parseDecimal(row['Limite Descubierto']);
+        const descuentoFijo = parseDecimal(row['Descuento Fijo']);
+        if (limiteDescubierto === null) {
+          result.errors.push(
+            `Fila ${rowNum}: Limite Descubierto invalido (${razonSocial}).`,
+          );
+          continue;
+        }
+        if (descuentoFijo === null) {
+          result.errors.push(
+            `Fila ${rowNum}: Descuento Fijo invalido (${razonSocial}).`,
+          );
+          continue;
+        }
+
+        validCustomers.push({
+          personeria: personeria || null,
+          razonSocial,
+          nombreFantasia: normalizeString(row['Nombre Fantasia']) || null,
+          code: code || null,
+          tipoDocumento: normalizeString(row['Tipo Documeto']) || null,
+          documento: documento || null,
+          categoriaImpositiva:
+            normalizeString(row['Categoria Impositiva']) || null,
+          telefono: normalizeString(row['Telefono']) || null,
+          celular: normalizeString(row['Celular']) || null,
+          email: normalizeString(row['Email']) || null,
+          web: normalizeString(row['Web']) || null,
+          observaciones: normalizeString(row['Observaciones']) || null,
+          provincia: normalizeString(row['Provincia']) || null,
+          ciudad: normalizeString(row['Ciudad']) || null,
+          domicilio: normalizeString(row['Domicilio']) || null,
+          pisoDepto: normalizeString(row['Piso Depto']) || null,
+          codigoPostal: normalizeString(row['Codigo Postal']) || null,
+          emailsEnvioFc: normalizeString(row['Emails Envio Fc']) || null,
+          listaPrecio: normalizeString(row['Lista Precio']) || null,
+          limiteDescubierto,
+          descuentoFijo,
+          vendedorAsignado: normalizeString(row['Vendedor Asignado']) || null,
+          plazo: normalizeString(row['Plazo']) || null,
+          tags: normalizeString(row['Tags']) || null,
+        });
+      }
+
+      if (result.errors.length > 0) {
+        await this.finishJob(job.id, 'FAILED', result);
+        return result;
+      }
+
+      const before = await this.prisma.customer.findMany();
+      await this.prisma.$transaction(async (tx) => {
+        await tx.importSnapshot.create({
+          data: {
+            jobId: job.id,
+            domainType: 'CUSTOMERS',
+            scopeKey: null,
+            data: before,
+          },
+        });
+        await tx.customer.deleteMany();
+        if (validCustomers.length > 0) {
+          await tx.customer.createMany({ data: validCustomers });
+        }
+      }, IMPORT_TRANSACTION_OPTIONS);
+
+      result.rowsImported = validCustomers.length;
+      await this.finishJob(job.id, 'SUCCESS', result);
+      return result;
+    } catch (error) {
+      await this.failJob(job.id, result, error);
+      throw error;
+    }
+  }
+
   parsePurchaseReviewFromText(text: string) {
     const parsed = this.parseTabularText(text);
     return this.normalizePurchaseRows(parsed.headers, parsed.rows);
@@ -1199,6 +1332,18 @@ export class ImportsService {
           await tx.supplier.deleteMany();
           if (suppliers.length > 0) {
             await tx.supplier.createMany({ data: suppliers });
+          }
+        }, IMPORT_TRANSACTION_OPTIONS);
+      }
+
+      if (snapshot.domainType === 'CUSTOMERS') {
+        const customers = this.parseJsonRecordArray(
+          snapshot.data,
+        ) as Prisma.CustomerCreateManyInput[];
+        await this.prisma.$transaction(async (tx) => {
+          await tx.customer.deleteMany();
+          if (customers.length > 0) {
+            await tx.customer.createMany({ data: customers });
           }
         }, IMPORT_TRANSACTION_OPTIONS);
       }

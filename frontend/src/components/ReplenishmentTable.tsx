@@ -39,6 +39,7 @@ export default function ReplenishmentTable() {
   const [manualError, setManualError] = useState('');
   const [manualOptions, setManualOptions] = useState<UnifiedProduct[]>([]);
   const [showDropdown, setShowDropdown] = useState(false);
+  const [selectedManualProduct, setSelectedManualProduct] = useState<UnifiedProduct | null>(null);
 
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('');
@@ -179,7 +180,7 @@ export default function ReplenishmentTable() {
   };
 
   const handleManualAdd = async () => {
-    const sku = manualSku.trim();
+    const sku = selectedManualProduct?.sku ?? manualSku.trim();
     const quantity = Number(manualQuantity);
     if (!sku || !Number.isFinite(quantity) || quantity <= 0) return;
 
@@ -188,6 +189,7 @@ export default function ReplenishmentTable() {
     try {
       await addReplenishmentManual({ sku, quantity });
       setManualSku('');
+      setSelectedManualProduct(null);
       setManualQuantity('1');
       await loadData();
       loadFilters();
@@ -248,7 +250,7 @@ export default function ReplenishmentTable() {
         return <td key={columnKey} className="cell-sku">{item.sku}</td>;
       case 'name':
         return (
-          <td key={columnKey} style={{ maxWidth: '420px', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          <td key={columnKey} className="cell-name-wrap">
             {item.name}
           </td>
         );
@@ -268,6 +270,7 @@ export default function ReplenishmentTable() {
                 value={editingQuantities[item.id] ?? String(item.quantity)}
                 disabled={savingQuantityId === item.id}
                 onChange={(event) => handleQuantityChange(item.id, event.target.value)}
+                onFocus={(event) => event.currentTarget.select()}
                 onBlur={() => handleQuantitySave(item.id)}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') {
@@ -367,6 +370,7 @@ export default function ReplenishmentTable() {
               value={manualSku}
               onChange={(event) => {
                 setManualSku(event.target.value);
+                setSelectedManualProduct(null);
                 setShowDropdown(true);
               }}
               onFocus={() => setShowDropdown(true)}
@@ -379,11 +383,11 @@ export default function ReplenishmentTable() {
                     key={option.id}
                     className="custom-dropdown-item"
                     onClick={() => {
-                      setManualSku(option.sku);
+                      setManualSku(option.name);
+                      setSelectedManualProduct(option);
                       setShowDropdown(false);
                     }}
                   >
-                    <span className="dropdown-sku">{option.sku}</span>
                     <span className="dropdown-name">{option.name}</span>
                   </li>
                 ))}
@@ -402,6 +406,7 @@ export default function ReplenishmentTable() {
               step="0.01"
               value={manualQuantity}
               onChange={(event) => setManualQuantity(event.target.value)}
+              onFocus={(event) => event.currentTarget.select()}
             />
           </div>
           

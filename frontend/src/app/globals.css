@@ -547,8 +547,7 @@ body {
   padding: 10px 16px;
   cursor: pointer;
   display: flex;
-  align-items: center;
-  gap: 12px;
+  align-items: flex-start;
   transition: background 0.2s ease;
 }
 
@@ -556,21 +555,13 @@ body {
   background: var(--color-bg-card-hover);
 }
 
-.dropdown-sku {
-  font-family: var(--font-mono);
-  font-size: 0.85rem;
-  color: var(--color-text-secondary);
-  font-weight: 600;
-  min-width: 60px;
-}
-
 .dropdown-name {
   font-size: 0.95rem;
   color: var(--color-text);
   font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
 }
 
 /* === Custom Quantity Input === */
@@ -811,6 +802,14 @@ body {
   font-family: var(--font-mono);
   text-align: right;
   font-weight: 600;
+}
+
+.cell-name-wrap {
+  max-width: 420px;
+  white-space: normal !important;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.35;
 }
 
 .cell-status {
@@ -1151,5 +1150,9 @@ main {
   
   .header-subtitle {
     display: none;
+  }
+
+  .cell-name-wrap {
+    max-width: 240px;
   }
 }
